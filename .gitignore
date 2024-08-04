@@ -1,0 +1,6 @@
+.*
+!.devcontainer
+!.editorconfig
+!.git*
+!.prettierrc
+__pycache__

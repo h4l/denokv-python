@@ -1,0 +1,21 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+  "name": "denokv-python",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "initializeCommand": "{ docker network inspect devcontainer_denokv_python > /dev/null && echo \"Network devcontainer_denokv_python exists\"; } || docker network create devcontainer_denokv_python",
+  "runArgs": ["--network=devcontainer_denokv_python"],
+  "postCreateCommand": "pipx install poetry",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.isort",
+        "ms-python.black-formatter"
+      ]
+    }
+  }
+}

@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "denokv"
+version = "0.1.0"
+description = "Connect to Deno KV databases from Python."
+authors = ["Hal Blackburn <hwtb2@cam.ac.uk>"]
+license = "MIT"
+readme = "README.md"
+packages = [{ include = "denokv", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+typing-extensions = "^4.12.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.2"
+black = "^24.8.0"
+flake8 = "^7.1.0"
+flake8-pyi = "^24.6.0"
+Flake8-pyproject = "^1.2.3"
+isort = "^5.13.2"
+mypy = "^1.11.1"
+flake8-bugbear = "^24.4.26"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.flake8]
+max-line-length = 80
+extend-select = "B950"
+extend-ignore = "E203,E501,E701"

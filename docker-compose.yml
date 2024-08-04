@@ -1,0 +1,23 @@
+services:
+  # docker run -it --init -p 4512:4512 -v ./data:/data ghcr.io/denoland/denokv --sqlite-path /data/denokv.sqlite serve --access-token <random-token>
+  denokv:
+    # If you're not using amd64, build a local-platform image with:
+    # $ docker buildx bake -f docker-bake.hcl denokv
+    image: "${DENOKV_PYTHON_DENOKV_IMAGE:-ghcr.io/denoland/denokv}"
+    command: serve
+    environment:
+      DENO_KV_ACCESS_TOKEN: "${DENOKV_PYTHON_DENOKV_ACCESS_TOKEN:?}"
+      DENO_KV_SQLITE_PATH: /workspaces/denokv-python/.denokv.sqlite
+    volumes:
+      - workspace:/workspaces/
+    networks:
+      - devcontainer_denokv_python
+
+networks:
+  devcontainer_denokv_python:
+    external: true
+
+volumes:
+  workspace:
+    external: true
+    name: "${DENOKV_DEV_WORKSPACE_MOUNT_SRC:?}"

@@ -29,6 +29,10 @@ pytest-asyncio = "^0.23.8"
 pytest-aiohttp = "^1.0.5"
 
 
+
+[tool.poetry.group.dev-extra.dependencies]
+jupyterlab = "^4.2.5"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

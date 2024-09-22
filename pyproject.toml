@@ -14,6 +14,7 @@ aiohttp = "^3.10.0"
 yarl = "^1.9.4"
 protobuf = "^5.27.3"
 foundationdb = "^7.3.47"
+v8serialize = "^0.1.0a1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"

@@ -783,6 +783,20 @@ files = [
 ]
 
 [[package]]
+name = "v8serialize"
+version = "0.1.0a1"
+description = "Read & write JavaScript values from Python with the V8 serialization format."
+optional = false
+python-versions = "<4.0,>=3.9"
+files = [
+    {file = "v8serialize-0.1.0a1-py3-none-any.whl", hash = "sha256:2b31e16e29c19929ff35a9e5981d2cd3f0c4f3af104f98af5e2891ff3ba37302"},
+    {file = "v8serialize-0.1.0a1.tar.gz", hash = "sha256:c11ed1e62d745cf0b869b6ecf15aada5c0f4df5e0ace58df9db801b7da077164"},
+]
+
+[package.dependencies]
+packaging = ">=14.5"
+
+[[package]]
 name = "yarl"
 version = "1.9.4"
 description = "Yet another URL library"
@@ -888,4 +902,4 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9"
-content-hash = "adc7c5f73f6c9357ece9fe8cbd3a768548e0a9ba8c109c5e11325568e2bd9282"
+content-hash = "681b748ad47083bf3104b6a4643c3027c50a83d9a873812d1f3e2d68044e9d88"

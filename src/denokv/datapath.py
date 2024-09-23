@@ -1,3 +1,8 @@
+"""The Deno KV [Data Path Protocol].
+
+[Data Path Protocol]: https://github.com/denoland/denokv/blob/main/proto/kv-connect.md#data-path-protocol
+"""
+
 import aiohttp
 from fdb.tuple import pack
 

@@ -3,20 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Mapping, Sequence, cast
+from typing import Mapping
+from typing import Sequence
+from typing import cast
 from uuid import UUID
 
 import aiohttp
 import aiohttp.client_exceptions
 from yarl import URL
 
-from denokv.errors import DenoKvError, DenoKvValidationError
+from denokv.errors import DenoKvError
+from denokv.errors import DenoKvValidationError
 
 
 @dataclass(slots=True, frozen=True)
 class DatabaseMetadata:
     """
-    MetadataExchangeResponse
+    MetadataExchangeResponse.
 
     ```json
     {

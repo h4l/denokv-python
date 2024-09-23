@@ -3,11 +3,16 @@
 [Data Path Protocol]: https://github.com/denoland/denokv/blob/main/proto/kv-connect.md#data-path-protocol
 """
 
+from __future__ import annotations
+
 import aiohttp
 from fdb.tuple import pack
 
-from denokv._datapath_pb2 import ReadRange, SnapshotRead, SnapshotReadOutput
-from denokv.auth import DatabaseMetadata, EndpointInfo
+from denokv._datapath_pb2 import ReadRange
+from denokv._datapath_pb2 import SnapshotRead
+from denokv._datapath_pb2 import SnapshotReadOutput
+from denokv.auth import DatabaseMetadata
+from denokv.auth import EndpointInfo
 
 
 async def snapshot_read(

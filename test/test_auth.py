@@ -1,7 +1,13 @@
+from __future__ import annotations
+
 import json
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Sequence, cast
+from typing import Any
+from typing import Awaitable
+from typing import Callable
+from typing import Sequence
+from typing import cast
 from uuid import UUID
 
 import aiohttp
@@ -11,18 +17,16 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient
 from yarl import URL
 
-from denokv.auth import (
-    ConsistencyLevel,
-    DatabaseMetadata,
-    EndpointInfo,
-    HttpRequestMetadataExchangeDenoKvError,
-    HttpResponseMetadataExchangeDenoKvError,
-    InvalidMetadataExchangeDenoKvError,
-    InvalidMetadataResponseDenoKvError,
-    MetadataExchangeDenoKvError,
-    get_database_metadata,
-    read_metadata_exchange_response,
-)
+from denokv.auth import ConsistencyLevel
+from denokv.auth import DatabaseMetadata
+from denokv.auth import EndpointInfo
+from denokv.auth import HttpRequestMetadataExchangeDenoKvError
+from denokv.auth import HttpResponseMetadataExchangeDenoKvError
+from denokv.auth import InvalidMetadataExchangeDenoKvError
+from denokv.auth import InvalidMetadataResponseDenoKvError
+from denokv.auth import MetadataExchangeDenoKvError
+from denokv.auth import get_database_metadata
+from denokv.auth import read_metadata_exchange_response
 
 pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
 
@@ -134,7 +138,7 @@ def test_read_metadata_exchange_response__rejects_invalid_data(
 
 @pytest.fixture
 def database_metadata_no_strong(
-    valid_metadata_exchange_response: dict[str, object]
+    valid_metadata_exchange_response: dict[str, object],
 ) -> dict[str, object]:
     no_strong = deepcopy(valid_metadata_exchange_response)
     for e in cast(list[dict[str, object]], no_strong["endpoints"]):
@@ -174,7 +178,8 @@ def db_api(
         status = int(request.query.get("status", "307"))
         assert 300 <= status <= 400
         return web.Response(
-            status=status, headers={"location": location}  # insecure :)
+            status=status,
+            headers={"location": location},  # insecure :)
         )
 
     async def auth(request: web.Request) -> web.Response:
@@ -319,7 +324,7 @@ async def test_get_database_metadata__handles_invalid_metadata(
 
 
 @pytest_mark_asyncio
-async def test_get_database_metadata__reject_metadata_without_strong_consistency_endpoint(  # noqa: B950
+async def test_get_database_metadata__reject_metadata_without_strong_consistency_endpoint(  # noqa: E501
     client: TestClient,
 ) -> None:
     server_url = client.make_url("/auth_no_strong")

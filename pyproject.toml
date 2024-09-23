@@ -18,17 +18,12 @@ v8serialize = "^0.1.0a1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"
-black = "^24.8.0"
-flake8 = "^7.1.0"
-flake8-pyi = "^24.6.0"
-Flake8-pyproject = "^1.2.3"
+ruff = "^0.6.7"
 isort = "^5.13.2"
 mypy = "^1.11.1"
-flake8-bugbear = "^24.4.26"
 pytest-asyncio = "^0.23.8"
 pytest-aiohttp = "^1.0.5"
-
-
+types-protobuf = "^5.27.0.20240920"
 
 [tool.poetry.group.dev-extra.dependencies]
 jupyterlab = "^4.2.5"
@@ -48,3 +43,42 @@ extra_standard_library = ["typing_extensions"]
 
 [tool.mypy]
 strict = true
+mypy_path = "./stubs"
+
+[[tool.mypy.overrides]]
+module = "denokv._datapath_pb2"
+# Generated protocol buffers stubs don't specify generic type params
+disallow_any_generics = false
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff]
+exclude = [
+  # Generated protobuf files
+  "src/denokv/_datapath_pb2.py",
+  "src/denokv/_datapath_pb2.pyi",
+]
+
+[tool.ruff.lint]
+select = [
+  "B",   # flake8-bugbear
+  "D",   # pydocstyle
+  "E",
+  "F",
+  "FA",  # flake8-future-annotations
+  "PYI", # flake8-pyi
+  "I",
+]
+
+ignore = [
+  "D100", # "Missing docstring in public module" — not everything is documented yet
+  "D101", # "Missing docstring in public class" — not everything is documented yet
+  "D102", # "Missing docstring in public method" — not everything is documented yet
+  "D103", # "Missing docstring in public function" — not everything is documented yet
+  "D104", # "Missing docstring in public package" — not everything is documented yet
+  "D105", # "Missing docstring in magic method" — not everything is documented yet
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"

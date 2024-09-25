@@ -1,11 +1,16 @@
+from __future__ import annotations
+
+import itertools
 import random
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from enum import IntEnum
 from itertools import count
 from typing import Callable
 from typing import Iterable
 from typing import Iterator
+from typing import Literal
 from typing import TypeAlias
 
 Backoff: TypeAlias = Iterable[float]
@@ -124,3 +129,68 @@ class ExponentialBackoff(Iterable[float]):
             yield interval
 
             now = self.time()
+
+
+class FinalDelayEnum(IntEnum):
+    FinalDelay = 0
+
+    def __repr__(self) -> str:
+        return self.name
+
+
+FinalDelayType: TypeAlias = Literal[FinalDelayEnum.FinalDelay]
+FinalDelay: FinalDelayType = FinalDelayEnum.FinalDelay
+
+
+def attempts(backoff: Iterable[float]) -> Iterable[float | FinalDelayType]:
+    """
+    Generate the retry-delays in a backoff strategy, ensuring a final attempt.
+
+    The delays from `backoff` will all be generated, followed by a `FinalDelay`
+    value, which is also the number 0. Callers can use this to detect the last
+    attempt if they care, or just sleep for each delay, with the last always
+    taking 0 seconds.
+
+    Because the final delay will always be the 0-second `FinalDelay`, it's fine
+    for retry code to sleep for 0 and then have the `for delay in backoff` loop
+    finish, using an `else:` clause on the loop to handle exhaustion of retries.
+    See the examples section.
+
+    Notes
+    -----
+    Iterating a `backoff` iterable as `for delay in backoff:` without
+    `attempts(backoff)` is a mistake, because the final delay in `backoff` will
+    not be followed by another iteration of the loop body.
+
+    FinalDelay: `denokv.backoff.FinalDelay`
+
+    Examples
+    --------
+    >>> list(attempts([1, 1.5, 3]))
+    [1, 1.5, 3, FinalDelay]
+    >>> list(attempts([]))
+    [FinalDelay]
+
+    >>> for delay in attempts([1.5]):
+    ...     print('attempting operation...')
+    ...     print(f'sleeping for {delay} before next attempt')
+    ... else:
+    ...     print('no more attempts available')
+    attempting operation...
+    sleeping for 1.5 before next attempt
+    attempting operation...
+    sleeping for 0 before next attempt
+    no more attempts available
+
+    >>> for delay in attempts([1.5]):
+    ...     print('attempting operation...')
+    ...     if delay is not FinalDelay:
+    ...         print(f'sleeping for {delay} before next attempt')
+    ...     else:
+    ...         print('no more attempts available')
+    attempting operation...
+    sleeping for 1.5 before next attempt
+    attempting operation...
+    no more attempts available
+    """
+    return itertools.chain(backoff, (FinalDelay,))

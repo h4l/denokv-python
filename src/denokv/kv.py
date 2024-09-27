@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from binascii import unhexlify
 from dataclasses import dataclass
 from enum import Flag
@@ -27,6 +26,7 @@ from denokv import datapath
 from denokv._datapath_pb2 import KvEntry as RawKvEntry
 from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import ValueEncoding
+from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo
@@ -315,7 +315,7 @@ database.
 
 
 def _cached_database_metadata(value: DatabaseMetadata) -> CachedValue[DatabaseMetadata]:
-    return CachedValue(value.expires_at.timestamp(), value=value)
+    return CachedValue(fresh_until=loop_time(wall_time=value.expires_at), value=value)
 
 
 def normalize_key(key: KvKeyTuple, *, bigints: bool = False) -> KvKeyTuple:
@@ -387,7 +387,7 @@ class DatabaseMetadataCache:
         self, now: float | None = None
     ) -> Result[DatabaseMetadata, MetadataExchangeDenoKvError]:
         if now is None:
-            now = time.time()
+            now = loop_time()
         current = self.current
         if current is not None and current.is_fresh(now):
             return Ok(current.value)

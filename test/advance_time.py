@@ -1,9 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Callable
+from typing import Final
+from typing import Generator
+from unittest.mock import patch
+
+import pytest
+
+
+@pytest.fixture
+def advance_time_time() -> Generator[None]:
+    """Advance time.time() when advance_time() is used to advance loop time."""
+
+    def on_loop_time_advanced(seconds: float) -> None:
+        time_advanced_time.advance_time(seconds)
+
+    time_advanced_time = AdvancedTime(time.time)
+    with patch("time.time", AdvancedTime(time.time)):
+        advance_time_listeners.add(on_loop_time_advanced)
+        try:
+            yield None
+        finally:
+            advance_time_listeners.remove(on_loop_time_advanced)
 
 
 @dataclass
@@ -27,6 +49,9 @@ class AdvancedTime:
 
     def __repr__(self) -> str:
         return f"<AdvancedTime of {self.unadvanced!r} by offset={self._offset}>"
+
+
+advance_time_listeners: Final[set[Callable[[float], None]]] = set()
 
 
 async def advance_time(seconds: float) -> None:
@@ -60,4 +85,8 @@ async def advance_time(seconds: float) -> None:
     # after the time has advanced and then sleeps the full amount.
     await asyncio.sleep(0)
     loop.time.advance_time(seconds)
+
+    for listener in advance_time_listeners:
+        listener(seconds)
+
     await end  # should take 0 wall-clock time

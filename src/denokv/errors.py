@@ -18,3 +18,18 @@ class DenoKvError(BaseException):
 
 class DenoKvValidationError(ValueError, DenoKvError):
     pass
+
+
+class DenoKvUserError(DenoKvError):
+    """An error caused by bad user input."""
+
+
+@dataclass(init=False)
+class InvalidCursor(DenoKvUserError):
+    """A cursor string passed to [kv.list()] is invalid."""
+
+    cursor: str
+
+    def __init__(self, message: str, *args: object, cursor: str) -> None:
+        super().__init__(message, *args)
+        self.cursor = cursor

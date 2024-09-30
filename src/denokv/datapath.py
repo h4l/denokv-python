@@ -15,7 +15,6 @@ from typing import Callable
 from typing import Final
 from typing import Protocol
 from typing import TypeAlias
-from typing import overload
 from typing import runtime_checkable
 
 import aiohttp
@@ -85,7 +84,6 @@ else:
     AnyKvKeyT_con = TypeVar("AnyKvKeyT_con", bound=AnyKvKey, contravariant=True)
 
 _T = TypeVar("_T")
-_T_co = TypeVar("_T_co", covariant=True)
 
 _LE64 = struct.Struct("<Q")
 """Little-endian 64-bit unsigned int format."""
@@ -384,53 +382,28 @@ async def snapshot_read(
     return Ok(read_output)
 
 
-class CreateKvEntryFn(Protocol[_T_co, AnyKvKeyT_con]):
-    """Type of a function that creates KvEntry types from validated field values."""
-
-    def __call__(
-        self,
-        key: AnyKvKeyT_con,
-        value: object,
-        versionstamp: bytes,
-        *,
-        raw: KvEntry,
-    ) -> _T_co: ...
-
-
 def is_kv_key_tuple(tup: tuple[object, ...]) -> TypeGuard[KvKeyTuple]:
     """Check if a tuple only contains valid KV key tuple type values."""
     return all(isinstance(part, KV_KEY_PIECE_TYPES) for part in tup)
 
 
-@overload
 def parse_protobuf_kv_entry(
     raw: KvEntry,
+    *,
     v8_decoder: Decoder,
-    create_kv_entry: CreateKvEntryFn[_T, KvKeyTuple],
-    preserve_key: None = None,
-) -> Result[_T, ValueError]: ...
-
-
-@overload
-def parse_protobuf_kv_entry(
-    raw: KvEntry,
-    v8_decoder: Decoder,
-    create_kv_entry: CreateKvEntryFn[_T, AnyKvKeyT],
-    preserve_key: AnyKvKeyT,
-) -> Result[_T, ValueError]: ...
-
-
-def parse_protobuf_kv_entry(
-    raw: KvEntry,
-    v8_decoder: Decoder,
-    create_kv_entry: CreateKvEntryFn[_T, AnyKvKeyT],
-    preserve_key: AnyKvKeyT | None = None,
-) -> Result[_T, ValueError]:
+    le64_type: Callable[[int], object] = int,
+) -> Result[tuple[KvKeyTuple, bytes | int | object, bytes], ValueError]:
     """
     Validate & decode the raw bytes of a protobuf KvEntry.
 
     If `preserve_key` is provided, it's passed to `create_kv_entry` instead of the key
     decoded from the `raw` `KvEntry`.
+
+    Returns
+    -------
+    :
+        A Result with Ok being tuple of (key, value, versionstamp) and Err
+        being a ValueError.
     """
     try:
         key = unpack(raw.key)
@@ -450,7 +423,7 @@ def parse_protobuf_kv_entry(
     elif raw.encoding == ValueEncoding.VE_LE64:
         if len(raw.value) != 8:
             return Err(ValueError(f"LE64 value is not a 64-bit value: {raw.value!r}"))
-        value = _LE64.unpack(raw.value)[0]
+        value = le64_type(_LE64.unpack(raw.value)[0])
     elif raw.encoding == ValueEncoding.VE_V8:
         try:
             value = v8_decoder.decodes(raw.value)
@@ -465,14 +438,7 @@ def parse_protobuf_kv_entry(
             else f"unknown: {raw.encoding}"
         )
         return Err(ValueError(f"Value encoding is {msg}"))
-    return Ok(
-        create_kv_entry(
-            key=preserve_key if preserve_key is not None else key,
-            value=value,
-            versionstamp=raw.versionstamp,
-            raw=raw,
-        )
-    )
+    return Ok((key, value, raw.versionstamp))
 
 
 def pack_key(key: AnyKvKey) -> bytes:
@@ -573,3 +539,31 @@ def read_range_single(key: AnyKvKey) -> ReadRange:
     """Create a ReadRange that matches a unique key or nothing."""
     start, end = pack_key_range(key, key, include_end=True)
     return ReadRange(start=start, end=end, limit=1)
+
+
+def read_range_multi(
+    *,
+    prefix: AnyKvKey | None,
+    start: AnyKvKey | None,
+    end: AnyKvKey | None,
+    limit: int | None = None,
+    reverse: bool = False,
+    exclude_start: bool = False,
+    exclude_end: bool = True,
+) -> ReadRange:
+    """Create a ReadRange that matches multiple keys with optional bounds."""
+    packed_start = pack_key(start) if start is not None else pack_key(prefix or ())
+    packed_end = (
+        pack_key(end) if end is not None else (pack_key(prefix or ()) + b"\xff")
+    )
+    # The datapath protocol includes the start, so if we want to exclude it we
+    # need to increment the start key to start from the next key after it.
+    if exclude_start:
+        packed_start = increment_packed_key(packed_start)
+    # The datapath protocol itself excludes the end key when evaluating a
+    # range, so if we want it to be included, we need to increment the end to
+    # have the db exclude the value after end instead.
+    if not exclude_end:
+        packed_end = increment_packed_key(packed_end)
+
+    return ReadRange(start=packed_start, end=packed_end, limit=limit, reverse=reverse)

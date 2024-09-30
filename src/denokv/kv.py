@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from base64 import urlsafe_b64decode
+from base64 import urlsafe_b64encode
 from binascii import unhexlify
 from dataclasses import dataclass
+from dataclasses import field
 from enum import Flag
 from enum import auto
 from typing import TYPE_CHECKING
@@ -13,19 +16,22 @@ from typing import ClassVar
 from typing import Final
 from typing import Generic
 from typing import Iterable
+from typing import Protocol
 from typing import Self
 from typing import Sequence
+from typing import TypeAlias
 from typing import TypedDict
 from typing import overload
 
 import aiohttp
 from fdb.tuple import pack
+from fdb.tuple import unpack
 from v8serialize import Decoder
 
 from denokv import datapath
-from denokv._datapath_pb2 import KvEntry as RawKvEntry
+from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import SnapshotRead
-from denokv._datapath_pb2 import ValueEncoding
+from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
@@ -35,9 +41,10 @@ from denokv.backoff import Backoff
 from denokv.backoff import ExponentialBackoff
 from denokv.backoff import attempts
 from denokv.datapath import KV_KEY_PIECE_TYPES
+from denokv.datapath import AnyKvKey
 from denokv.datapath import AnyKvKeyT
 from denokv.datapath import AutoRetry
-from denokv.datapath import CreateKvEntryFn
+from denokv.datapath import DataPathError
 from denokv.datapath import KvKeyEncodable
 from denokv.datapath import KvKeyEncodableT
 from denokv.datapath import KvKeyPiece
@@ -45,8 +52,11 @@ from denokv.datapath import KvKeyTuple
 from denokv.datapath import ProtocolViolation
 from denokv.datapath import SnapshotReadResult
 from denokv.datapath import is_kv_key_tuple
+from denokv.datapath import pack_key
 from denokv.datapath import parse_protobuf_kv_entry
+from denokv.datapath import read_range_multi
 from denokv.datapath import read_range_single
+from denokv.errors import InvalidCursor
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
@@ -69,15 +79,18 @@ else:
 
 SAFE_FLOAT_INT_RANGE: Final = range(-(2**53 - 1), 2**53)  # 2**53 - 1 is max safe
 
+CursorFormatType: TypeAlias = Callable[["ListContext"], "AnyCursorFormat"]
 
-class KvListOptions(TypedDict):
+
+class KvListOptions(TypedDict, total=False):
     """Keyword arguments of `Kv.list()`."""
 
-    limit: int
-    cursor: str
-    reverse: bool  # order asc/desc?
-    consistency: ConsistencyLevel
-    batchSize: int
+    limit: int | None
+    cursor: str | None
+    reverse: bool | None  # order asc/desc?
+    consistency: ConsistencyLevel | None
+    batch_size: int | None
+    cursor_format_type: CursorFormatType | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -89,35 +102,24 @@ class KvEntry(Generic[AnyKvKeyT, T]):
     versionstamp: VersionStamp
 
 
-def _create_kv_entry(
-    key: AnyKvKeyT,
-    value: object,
-    versionstamp: bytes,
-    *,
-    raw: RawKvEntry,
-) -> KvEntry[AnyKvKeyT, object]:
-    # Wrap VE_LE64 values with the KvU64 marker type so that they get re-encoded
-    # as VE_LE64 rather than using V8 serialization if they're written back.
-    if raw.encoding == ValueEncoding.VE_LE64:
-        assert isinstance(value, int)
-        value = KvU64(value)
+@dataclass(slots=True, frozen=True)
+class ListKvEntry(KvEntry[AnyKvKeyT, T]):
+    """
+    A value read from the Deno KV database with a list operation.
 
-    # Wrap plain tuple keys as KvKey so that we preserve int as int if a key
-    # read from the DB is passed back into a Kv method which is normalising int
-    # to float for JS compatibility.
-    if not isinstance(key, KvKeyEncodable):
-        # The type signature is not quite accurate as we convert raw key tuples
-        # to our KvKey tuple subclass, but this case is only used internally in
-        # situations like listing keys where we don't have a potential custom
-        # key type to preserve.
-        key = KvKey(*key)  # type: ignore[misc,assignment]
-    return KvEntry(key=key, value=value, versionstamp=VersionStamp(versionstamp))
+    In addition to a normal [KvEntry's] key, value and version, [ListKvEntry]
+    provides a [cursor] that can be used to start another [Kv.list()] starting
+    from the value after this.
+    """
 
+    listing: ListContext
 
-if TYPE_CHECKING:
-    ___create_kv_entry: CreateKvEntryFn[KvEntry[KvKey, object], KvKey] = (
-        _create_kv_entry
-    )
+    @property
+    def cursor(self) -> str:
+        result = self.listing.cursor_format.get_cursor_for_key(self.key)
+        if isinstance(result, Err):
+            raise result.error  # should never occur with entries from Kv.list()
+        return result.value
 
 
 class VersionStamp(bytes):
@@ -606,7 +608,213 @@ class Kv:
             return_unwrapped = len(args) == 1
 
         args = tuple(self._prepare_key(key) for key in args)
-        read = SnapshotRead(ranges=[read_range_single(key) for key in args])
+        ranges = [read_range_single(key) for key in args]
+        snapshot_read_result = await self._snapshot_read(
+            ranges, consistency=consistency
+        )
+        if isinstance(snapshot_read_result, Err):
+            raise snapshot_read_result.error
+        result, endpoint = snapshot_read_result.value
+
+        assert len(args) == len(ranges)
+
+        results: list[tuple[AnyKvKeyT, KvEntry[AnyKvKeyT] | None]] = []
+        decoder = self.v8_decoder
+        for key, in_range, range in zip(args, ranges, result.ranges):
+            if len(range.values) == 0:
+                results.append((key, None))
+                continue
+            if len(range.values) != 1:
+                raise ProtocolViolation(
+                    f"Server responded with {len(range.values)} values to "
+                    f"read for key {key!r} with limit 1",
+                    data=result,
+                    endpoint=endpoint,
+                )
+            raw_kv_entry = range.values[0]
+            if raw_kv_entry.key != in_range.start:
+                raise ProtocolViolation(
+                    f"Server responded to read for exact key "
+                    f"{in_range.start!r} with key {raw_kv_entry.key!r}",
+                    data=result,
+                    endpoint=endpoint,
+                )
+
+            parse_result = parse_protobuf_kv_entry(
+                raw_kv_entry, v8_decoder=decoder, le64_type=KvU64
+            )
+            if isinstance(parse_result, Err):
+                raise ProtocolViolation(
+                    f"Server responded to Data Path request with invalid "
+                    f"value: {parse_result.error}",
+                    data=raw_kv_entry,
+                    endpoint=endpoint,
+                ) from parse_result.error
+            parsed_key, parsed_value, parsed_versionstamp = parse_result.value
+
+            kv_entry = KvEntry(
+                key=key,  # We keep the caller's key which may be a custom type
+                value=parsed_value,
+                versionstamp=VersionStamp(parsed_versionstamp),
+            )
+            results.append((key, kv_entry))
+
+        if return_unwrapped:
+            assert len(results) == 1
+            return results[0]
+        return tuple(results)
+
+    async def list(
+        self,
+        *,
+        prefix: AnyKvKeyT | None = None,
+        start: AnyKvKeyT | None = None,
+        end: AnyKvKeyT | None = None,
+        **options: Unpack[KvListOptions],
+    ) -> AsyncIterator[ListKvEntry[KvKey]]:
+        limit = options.get("limit")
+        if limit is not None and limit < 0:
+            raise ValueError(f"limit cannot be negative: {limit}")
+
+        batch_size = options.get("batch_size")
+        batch_size = min(500, (limit or 100) if batch_size is None else batch_size)
+        if batch_size < 1:
+            raise ValueError(f"batch_size cannot be < 1: {batch_size}")
+        reverse = options.get("reverse") or False
+        consistency = options.get("consistency") or ConsistencyLevel.STRONG
+        cursor = options.get("cursor")
+
+        prefix = None if prefix is None else self._prepare_key(prefix)
+        start = None if start is None else self._prepare_key(start)
+        end = None if end is None else self._prepare_key(end)
+
+        read_range = read_range_multi(
+            prefix=prefix,
+            start=start,
+            end=end,
+            reverse=reverse,
+            limit=batch_size,
+        )
+
+        context = ListContext(
+            prefix=prefix,
+            start=start,
+            end=end,
+            packed_start=read_range.start,
+            packed_end=read_range.end,
+            limit=limit,
+            cursor=cursor,
+            reverse=reverse,
+            consistency=consistency,
+            batch_size=batch_size,
+            cursor_format_type=options.get("cursor_format_type")
+            or Base64KeySuffixCursorFormat.from_list_context,
+        )
+
+        batch_start: KvKeyTuple | None = None
+        if cursor is not None:
+            cursor_result = context.cursor_format.get_key_for_cursor(cursor)
+            if isinstance(cursor_result, Err):
+                raise cursor_result.error
+            if not (read_range.start <= pack_key(cursor_result.value) < read_range.end):
+                raise InvalidCursor(
+                    "cursor is not within the the start and end key range",
+                    cursor=cursor,
+                )
+            batch_start = cursor_result.value
+
+        decoder = self.v8_decoder
+        if limit == 0:
+            return
+        count = 0
+        while True:
+            if batch_start is not None:
+                # With a known limit we can reduce the batch size on the final
+                # batch to avoid reading results we can't yield
+                count_remaining = None if limit is None else limit - count
+                required_batch_size = min(batch_size, count_remaining or batch_size)
+
+                # re-calculate the range to start from the cursor position
+                if reverse:
+                    # start and end of reversed ranges remain in ascending
+                    # order, the order results are returned in is reversed.
+                    # So the batch start controls end bound in reverse order.
+                    read_range = read_range_multi(
+                        prefix=prefix,
+                        start=start,
+                        end=batch_start,
+                        reverse=True,
+                        limit=required_batch_size,
+                    )
+                else:
+                    read_range = read_range_multi(
+                        prefix=prefix,
+                        # The batch_start is the key to start after, unlike the
+                        # normal start key which is the (inclusive) key to start
+                        # from.
+                        exclude_start=True,
+                        start=batch_start,
+                        end=end,
+                        reverse=False,
+                        limit=required_batch_size,
+                    )
+
+            snapshot_read_result = await self._snapshot_read(
+                ranges=[read_range], consistency=consistency
+            )
+            if isinstance(snapshot_read_result, Err):
+                raise snapshot_read_result.error
+            result, endpoint = snapshot_read_result.value
+            if len(result.ranges) != 1:
+                raise ProtocolViolation(
+                    f"Server responded with {len(result.ranges)} ranges to "
+                    f"request for 1 range",
+                    data=result,
+                    endpoint=endpoint,
+                )
+
+            parsed_key: KvKeyTuple | None = None
+            (result_range,) = result.ranges
+            for raw_kv_entry in result_range.values:
+                parse_result = parse_protobuf_kv_entry(
+                    raw_kv_entry, v8_decoder=decoder, le64_type=KvU64
+                )
+                if isinstance(parse_result, Err):
+                    raise ProtocolViolation(
+                        f"Server responded to Data Path request with invalid "
+                        f"value: {parse_result.error}",
+                        data=raw_kv_entry,
+                        endpoint=endpoint,
+                    ) from parse_result.error
+                parsed_key, parsed_value, parsed_versionstamp = parse_result.value
+
+                kv_entry = ListKvEntry(
+                    key=KvKey.wrap_tuple_keys(parsed_key),
+                    value=parsed_value,
+                    versionstamp=VersionStamp(parsed_versionstamp),
+                    listing=context,
+                )
+                yield kv_entry
+
+                count += 1
+                if limit is not None and count >= limit:
+                    return
+
+            # If the read returned less results than the limit, we must have
+            # read all the keys that exist within the key's range. Another read
+            # would return an empty set.
+            if len(result_range.values) < read_range.limit:
+                return
+
+            if parsed_key is None:
+                assert len(result_range.values) == 0
+                return
+            batch_start = parsed_key
+
+    async def _snapshot_read(
+        self, ranges: Sequence[ReadRange], *, consistency: ConsistencyLevel
+    ) -> _KvSnapshotReadResult:
+        read = SnapshotRead(ranges=ranges)
         result: SnapshotReadResult
         endpoint: EndpointInfo
         for delay in attempts(self.retry_delays):
@@ -640,99 +848,149 @@ class Kv:
                     self.metadata_cache.purge(cached_meta.value)
                     continue
                 assert result.error.auto_retry is AutoRetry.NEVER
-                raise result.error
+                return result
             break
         else:
             assert isinstance(result, Err)
-            raise result.error
+            return result
+        assert isinstance(result, Ok)
+        return Ok((result.value, endpoint))
 
-        assert len(args) == len(read.ranges)
 
-        results: list[tuple[AnyKvKeyT, KvEntry[AnyKvKeyT] | None]] = []
-        decoder = self.v8_decoder
-        for key, in_range, range in zip(args, read.ranges, result.value.ranges):
-            if len(range.values) == 0:
-                results.append((key, None))
-                continue
-            if len(range.values) != 1:
-                raise ProtocolViolation(
-                    f"Server responded with {len(range.values)} values to "
-                    f"read for key {key!r} with limit 1",
-                    data=result,
-                    endpoint=endpoint,
+_KvSnapshotReadResult = Result[tuple[SnapshotReadOutput, EndpointInfo], DataPathError]
+
+
+@dataclass(frozen=True)
+class ListContext:
+    prefix: AnyKvKey | None
+    start: AnyKvKey | None
+    end: AnyKvKey | None
+    packed_start: bytes
+    packed_end: bytes
+    limit: int | None
+    cursor: str | None
+    reverse: bool
+    consistency: ConsistencyLevel
+    batch_size: int
+    cursor_format_type: Callable[[ListContext], AnyCursorFormat] = field(
+        repr=False,
+        compare=False,
+    )
+    cursor_format: AnyCursorFormat = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "cursor_format", self.cursor_format_type(self))
+
+
+class AnyCursorFormat(Protocol):
+    def get_key_for_cursor(self, cursor: str) -> Result[KvKeyTuple, InvalidCursor]: ...
+
+    def get_cursor_for_key(self, key: AnyKvKey) -> Result[str, ValueError]: ...
+
+
+@dataclass(frozen=True)
+class Base64KeySuffixCursorFormat(AnyCursorFormat):
+    r"""
+    A cursor format that encodes keys as URL-safe base64.
+
+    Packed key bytes that are common to both the start and end key range are
+    omitted from the encoded cursor values. This matches the behaviour of Deno's
+    built-in KV.list() cursors.
+
+    Examples
+    --------
+    >>> from base64 import b64decode
+    >>> from denokv.datapath import pack_key_range
+
+    >>> start, end = pack_key_range(prefix=('foo',))
+    >>> cf = Base64KeySuffixCursorFormat(packed_start=start, packed_end=end)
+
+    The cursor encodes just the part of the key that isn't in both start and
+    end.
+
+    >>> cf.get_cursor_for_key(('foo', 'EXAMPLE'))
+    Ok('AkVYQU1QTEUA')
+    >>> b64decode('AkVYQU1QTEUA')
+    b'\x02EXAMPLE\x00'
+    """
+
+    packed_start: bytes
+    packed_end: bytes
+    redundant_prefix_length: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "redundant_prefix_length",
+            _common_prefix_length(self.packed_start, self.packed_end),
+        )
+
+    @classmethod
+    def from_list_context(cls, list_context: ListContext) -> Self:
+        return cls(
+            packed_start=list_context.packed_start, packed_end=list_context.packed_end
+        )
+
+    def get_key_for_cursor(self, cursor: str) -> Result[KvKeyTuple, InvalidCursor]:
+        try:
+            significant_packed_key_bytes = urlsafe_b64decode(cursor)
+        except Exception as e:
+            err = InvalidCursor("cursor is not valid URL-safe base64", cursor=cursor)
+            err.__cause__ = e
+            return Err(err)
+
+        packed_key = (
+            self.packed_start[: self.redundant_prefix_length]
+            + significant_packed_key_bytes
+        )
+
+        if not (self.packed_start <= packed_key < self.packed_end):
+            return Err(
+                InvalidCursor(
+                    "cursor is not within the the start and end key range",
+                    cursor=cursor,
                 )
-            value = range.values[0]
-            if value.key != in_range.start:
-                raise ProtocolViolation(
-                    f"Server responded to read for exact key "
-                    f"{in_range.start!r} with key {value.key!r}",
-                    data=result,
-                    endpoint=endpoint,
-                )
-
-            value_result = parse_protobuf_kv_entry(
-                value, decoder, _create_kv_entry, preserve_key=key
             )
-            if isinstance(value_result, Err):
-                raise ProtocolViolation(
-                    f"Server responded to Data Path request with invalid "
-                    f"value: {value_result.error}",
-                    data=value,
-                    endpoint=endpoint,
-                ) from value_result.error
-            results.append((key, value_result.value))
 
-        if return_unwrapped:
-            assert len(results) == 1
-            return results[0]
-        return tuple(results)
+        try:
+            unpacked_key = unpack(packed_key)
+            if not is_kv_key_tuple(unpacked_key):
+                return Err(
+                    InvalidCursor("cursor contains invalid part types", cursor=cursor)
+                )
+            return Ok(unpacked_key)
+        except Exception as e:
+            err = InvalidCursor(
+                "cursor is not a valid suffix for the start and end keys", cursor=cursor
+            )
+            err.__cause__ = e
+            return Err(err)
 
-    @overload
-    async def list(
-        self,
-        *,
-        start: KvKey,
-        end: KvKey,
-        prefix: None = None,
-        **options: Unpack[KvListOptions],
-    ) -> AsyncIterator[tuple[KvKeyTupleT, KvEntry | None]]: ...
+    def get_cursor_for_key(self, key: AnyKvKey) -> Result[str, ValueError]:
+        packed_key = pack_key(key)
+        if not (self.packed_start <= packed_key < self.packed_end):
+            return Err(ValueError("key is not within the start and end keys"))
 
-    @overload
-    async def list(
-        self,
-        *,
-        prefix: KvKey,
-        start: None = None,
-        end: None = None,
-        **options: Unpack[KvListOptions],
-    ) -> AsyncIterator[tuple[KvKeyTupleT, KvEntry | None]]: ...
+        significant_packed_key_bytes = packed_key[self.redundant_prefix_length :]
+        return Ok(urlsafe_b64encode(significant_packed_key_bytes).decode())
 
-    @overload
-    async def list(
-        self,
-        *,
-        prefix: KvKey,
-        end: KvKey,
-        start: None = None,
-        **options: Unpack[KvListOptions],
-    ) -> AsyncIterator[tuple[KvKeyTupleT, KvEntry | None]]: ...
 
-    @overload
-    async def list(
-        self,
-        *,
-        prefix: KvKey,
-        start: KvKey,
-        end: None = None,
-        **options: Unpack[KvListOptions],
-    ) -> AsyncIterator[tuple[KvKeyTupleT, KvEntry | None]]: ...
+def _common_prefix_length(a: Sequence[object], b: Sequence[object]) -> int:
+    """
+    Get the number of elements that are the same from the start of two sequences.
 
-    async def list(
-        self,
-        *,
-        prefix: KvKey | None = None,
-        start: KvKey | None = None,
-        end: KvKey | None = None,
-        **options: Unpack[KvListOptions],
-    ) -> AsyncIterator[tuple[KvKeyTupleT, KvEntry | None]]:
-        raise NotImplementedError
+    >>> _common_prefix_length('abc', 'abd')
+    2
+    >>> _common_prefix_length('abc', 'xyz')
+    0
+    >>> _common_prefix_length('abc', 'abc')
+    3
+    >>> _common_prefix_length('', '')
+    0
+    """
+    match_length = 0
+    for match_length, (_a, _b) in enumerate(zip(a, b), start=1):
+        if _a != _b:
+            match_length -= 1
+            break
+    return match_length

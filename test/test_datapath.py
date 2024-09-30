@@ -57,12 +57,11 @@ from denokv.datapath import parse_protobuf_kv_entry
 from denokv.datapath import read_range_single
 from denokv.datapath import snapshot_read
 from denokv.kv import KvEntry
+from denokv.kv import KvKey
 from denokv.kv import KvU64
 from denokv.kv import VersionStamp
-from denokv.kv import _create_kv_entry
 from denokv.result import Err
 from denokv.result import Ok
-from denokv.result import Result
 from test.denokv_testing import assume_ok
 
 pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
@@ -71,11 +70,10 @@ v8_decoder = v8serialize.Decoder()
 
 
 def unsafe_parse_protobuf_kv_entry(raw: ProtobufKvEntry) -> KvEntry:
-    return assume_ok(
-        parse_protobuf_kv_entry(
-            raw, v8_decoder=v8_decoder, create_kv_entry=_create_kv_entry
-        )
+    key, value, versionstamp = assume_ok(
+        parse_protobuf_kv_entry(raw, v8_decoder=v8_decoder, le64_type=KvU64)
     )
+    return KvEntry(KvKey.wrap_tuple_keys(key), value, VersionStamp(versionstamp))
 
 
 class MockKvDbEntry(NamedTuple):
@@ -777,11 +775,8 @@ async def test_snapshot_read__reads_expected_values(
 def test_parse_protobuf_kv_entry__decodes_valid_kv_entry(
     raw_entry: ProtobufKvEntry, decoded: KvEntry
 ) -> None:
-    value: Result[KvEntry[KvKeyTuple, object], ValueError] = parse_protobuf_kv_entry(
-        raw_entry, v8_decoder=Decoder(), create_kv_entry=_create_kv_entry
-    )
-    assert isinstance(value, Ok)
-    assert value.value == decoded
+    kv_entry = unsafe_parse_protobuf_kv_entry(raw_entry)
+    assert kv_entry == decoded
 
 
 @pytest.mark.parametrize(
@@ -837,9 +832,7 @@ def test_parse_protobuf_kv_entry__decodes_valid_kv_entry(
 def test_parse_protobuf_kv_entry__reports_invalid_kv_entry(
     raw_entry: ProtobufKvEntry, msg_pattern: str
 ) -> None:
-    value = parse_protobuf_kv_entry(
-        raw_entry, v8_decoder=Decoder(), create_kv_entry=_create_kv_entry
-    )
+    value = parse_protobuf_kv_entry(raw_entry, v8_decoder=Decoder(), le64_type=KvU64)
     assert isinstance(value, Err)
     assert isinstance(value.error, ValueError)
     assert re.search(msg_pattern, str(value.error))

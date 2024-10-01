@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import math
 import re
 import struct
@@ -53,6 +54,7 @@ from denokv.datapath import RequestUnsuccessful
 from denokv.datapath import ResponseUnsuccessful
 from denokv.datapath import increment_packed_key
 from denokv.datapath import pack_key
+from denokv.datapath import pack_key_range
 from denokv.datapath import parse_protobuf_kv_entry
 from denokv.datapath import read_range_single
 from denokv.datapath import snapshot_read
@@ -913,6 +915,96 @@ def test_increment_packed_key(
     gt_pk1 = increment_packed_key(pk1)
     assert pk1 < gt_pk1
     assert pk2 >= gt_pk1
+
+
+pack_key_range_example_keys = st.one_of(
+    st.none(),
+    st.just(()),
+    st.tuples(st.sampled_from("_abcd")),
+    st.tuples(
+        st.sampled_from("_abcd"),
+        st.integers(min_value=0, max_value=5),
+    ),
+)
+
+
+@given(
+    prefix=pack_key_range_example_keys,
+    start=pack_key_range_example_keys,
+    end=pack_key_range_example_keys,
+    exclude_start=st.booleans(),
+    exclude_end=st.booleans(),
+)
+def test_pack_key_range(
+    prefix: KvKeyTuple | None,
+    start: KvKeyTuple | None,
+    end: KvKeyTuple | None,
+    exclude_start: bool,
+    exclude_end: bool,
+) -> None:
+    """
+    Test `pack_key_range()` by comparing it against Python tuple comparison.
+
+    We implement a simplified version of pack_key_range's bytes key range
+    matching in is_included_by_tuple_key() by comparing unpacked key tuples
+    directly, using the same logic and parameters as pack_key_range() and how
+    the KV DB evaluates the ranges (is_included_by_packed_key()).
+    """
+    keys = [
+        *(("a", i) for i in range(4)),
+        *(("b", i) for i in range(4)),
+        *(("c", i) for i in range(4)),
+    ]
+
+    packed_start, packed_end = pack_key_range(
+        prefix=prefix,
+        start=start,
+        end=end,
+        exclude_start=exclude_start,
+        exclude_end=exclude_end,
+    )
+
+    def is_included_by_packed_key(key: KvKeyTuple) -> bool:
+        # Data Path protocol always evaluates ranges with inclusive start and
+        # exclusive endpoints. Inclusive/exclusive-ness is baked into the packed
+        # value by pack_key_range.
+        return packed_start <= pack(key) < packed_end
+
+    def is_included_by_tuple_key(key: KvKeyTuple) -> bool:
+        start_tuple = start if start is not None else (prefix or ())
+        start_satisfied = (key > start_tuple) if exclude_start else (key >= start_tuple)
+
+        end_tuple = (
+            end
+            if end is not None
+            else tuple[KvKeyPiece | Infinity, ...]((*(prefix or ()), Infinity()))
+        )
+        end_satisfied = (key < end_tuple) if exclude_end else (key <= end_tuple)
+
+        return start_satisfied and end_satisfied
+
+    keys_by_packed_key = [k for k in keys if is_included_by_packed_key(k)]
+    keys_by_tuple_key = [k for k in keys if is_included_by_tuple_key(k)]
+
+    assert keys_by_packed_key == keys_by_tuple_key
+
+
+@functools.total_ordering
+class Infinity:
+    """
+    Greater than everything.
+
+    >>> 3 < Infinity()
+    True
+    >>> float('inf') < Infinity()
+    True
+    """
+
+    def __gt__(self, other: object) -> bool:
+        return True
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Infinity)
 
 
 @pytest.fixture

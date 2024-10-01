@@ -473,53 +473,81 @@ def pack_key(key: AnyKvKey) -> bytes:
 
 
 def pack_key_range(
-    start: AnyKvKey, end: AnyKvKey, *, include_end: bool = False
+    *,
+    prefix: AnyKvKey | None = None,
+    start: AnyKvKey | None = None,
+    end: AnyKvKey | None = None,
+    exclude_start: bool = False,
+    exclude_end: bool = True,
 ) -> tuple[bytes, bytes]:
     r"""
-    Get the encoded key bytes defining the start and end of a range of keys.
+    Get the encoded key bytes bounding the start and end of a range of keys.
 
-    Containment of a key in the range is assumed to be evaluated with
-    `start <= x < end`, regardless of the `include_end` argument, because this
-    is now Deno KV evaluates ranges. `include_end` affects the encoding of the
-    `end` key:
-
-    - When `include_end` is False and by default, `end` is encoded as
-        `pack_key(end)`.
-    - When `include_end` is True, `end` is encoded as a bytes value strictly
-        greater than `pack_key(end)`, but <= `pack_key(increment(end))` (for a
-        hypothetical increment function)
+    Containment of a key in the range bounded by the packed keys is assumed to
+    be evaluated with `start <= x < end`, regardless of the
+    `exclude_start`/`exclude_end` arguments, because this is now Deno KV / Data
+    Path Protocol evaluates ranges. The exclude arguments affect the encoding of
+    the start and end to achieve the requested inclusion behaviour when
+    evaluated using `start <= x < end`.
 
     Examples
     --------
     End is excluded by default
 
-    >>> start, end = pack_key_range((0,), (10,))
-    >>> assert (start, end) == pack_key_range((0,), (10,), include_end=False)
+    >>> def in_range(key):
+    ...     # This is how Data Path Protocol evaluates if a value is in a range
+    ...     return start <= pack_key(key) < end
 
-    >>> assert all(start <= pack_key((i,)) < end for i in range(10))
-    >>> assert pack_key((10,)) >= end
+    >>> start, end = pack_key_range(start=(0,), end=(10,))
+    >>> assert in_range((0,)) and in_range((5,)) and in_range((9,))
+    >>> assert not in_range((-1,)) and not in_range((10,))
 
+    >>> start, end = pack_key_range(start=(0,), end=(10,),
+    ...                             exclude_start=True, exclude_end=False)
+    >>> assert in_range((1,)) and in_range((5,)) and in_range((10,))
+    >>> assert not in_range((0,)) and not in_range((11,))
 
-    Include the endpoint in the range with `include_end=True`
+    The `prefix` defines both the start and end. `start` and `end` take
+    precedence over `prefix` if both are set.
 
-    >>> start, end = pack_key_range((0,), (9,), include_end=True)
-    >>> assert all(start <= pack_key((i,)) < end for i in range(10))
+    >>> start, end = pack_key_range(prefix=('b',))
+    >>> assert in_range(('b', 1)) and in_range(('b', 'any'))
+    >>> assert not in_range(('a', 'any')) and not in_range(('c', 'any'))
 
-    `start` and `end` are tuples of key parts that define an inclusive start,
-    exclusive end range. The result is a pair of `bytes` values:
-    $$(packed_start, packed_end) = pack_key_range(start, end)$$ such that
-    $$packed_start <= pack_key(key) < packed_end$$ for any `key` satisfying
-    $$start <= key < end$$.
+    >>> start, end = pack_key_range(prefix=('b',), start=('a', 3))
+    >>> assert in_range(('a', 3)) and in_range(('b', 'any'))
+    >>> assert not in_range(('a', 2)) and not in_range(('c', 'any'))
 
-    The `packed_end` bytes is not necessarily an unpackable FoundationDB key.
-    It may not be possible to call `fdb.tuple.unpack(packed_end)`, but the bytes
-    value none the less satisfies the range described, so it's suitable to use
-    in a FoundationDB query.
+    >>> start, end = pack_key_range(prefix=('b',), end=('b', 3))
+    >>> assert in_range(('b', 0)) and in_range(('b', 2))
+    >>> assert not in_range(('a', 'any')) and not in_range(('b', 3))
+
+    When no endpoints are specified, every key is included.
+
+    >>> start, end = pack_key_range()
+    >>> assert in_range(()) and in_range(('any',)) and in_range(('z',))
+
+    Notes
+    -----
+    The packed start/end bytes are not necessarily an un-packable FoundationDB
+    key values. It may not be possible to call `fdb.tuple.unpack(packed_end)`,
+    but the byte values none the less satisfy the range described. They must
+    only be used to evaluate start/end of range queries, not as actual key
+    values.
     """
-    packed_start = pack_key(start)
-    packed_end = packed_start if start == end else pack_key(end)
-    if include_end:
-        return packed_start, increment_packed_key(packed_end)
+    packed_start = pack_key(start) if start is not None else pack_key(prefix or ())
+    packed_end = (
+        pack_key(end) if end is not None else (pack_key(prefix or ()) + b"\xff")
+    )
+    # The datapath protocol includes the start, so if we want to exclude it we
+    # need to increment the start key to start from the next key after it.
+    if exclude_start:
+        packed_start = increment_packed_key(packed_start)
+    # The datapath protocol itself excludes the end key when evaluating a
+    # range, so if we want it to be included, we need to increment the end to
+    # have the db exclude the value after end instead.
+    if not exclude_end:
+        packed_end = increment_packed_key(packed_end)
     return packed_start, packed_end
 
 
@@ -537,7 +565,7 @@ def increment_packed_key(packed_key: bytes) -> bytes:
 
 def read_range_single(key: AnyKvKey) -> ReadRange:
     """Create a ReadRange that matches a unique key or nothing."""
-    start, end = pack_key_range(key, key, include_end=True)
+    start, end = pack_key_range(start=key, end=key, exclude_end=False)
     return ReadRange(start=start, end=end, limit=1)
 
 
@@ -551,19 +579,12 @@ def read_range_multi(
     exclude_start: bool = False,
     exclude_end: bool = True,
 ) -> ReadRange:
-    """Create a ReadRange that matches multiple keys with optional bounds."""
-    packed_start = pack_key(start) if start is not None else pack_key(prefix or ())
-    packed_end = (
-        pack_key(end) if end is not None else (pack_key(prefix or ()) + b"\xff")
+    """Create a ReadRange that matches multiple keys."""
+    packed_start, packed_end = pack_key_range(
+        prefix=prefix,
+        start=start,
+        end=end,
+        exclude_start=exclude_start,
+        exclude_end=exclude_end,
     )
-    # The datapath protocol includes the start, so if we want to exclude it we
-    # need to increment the start key to start from the next key after it.
-    if exclude_start:
-        packed_start = increment_packed_key(packed_start)
-    # The datapath protocol itself excludes the end key when evaluating a
-    # range, so if we want it to be included, we need to increment the end to
-    # have the db exclude the value after end instead.
-    if not exclude_end:
-        packed_end = increment_packed_key(packed_end)
-
     return ReadRange(start=packed_start, end=packed_end, limit=limit, reverse=reverse)

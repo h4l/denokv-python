@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     class KvKeyEncodable(Protocol):
         def kv_key_bytes(self) -> bytes: ...
 
+    KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
     AnyKvKey: TypeAlias = KvKeyEncodable | KvKeyTuple
     AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey, default=AnyKvKey)
     AnyKvKeyT_con = TypeVar(
@@ -78,6 +79,7 @@ else:
     class KvKeyEncodable(Protocol):
         def kv_key_bytes(self) -> bytes: ...
 
+    KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
     AnyKvKey: TypeAlias = KvKeyEncodable | KvKeyTuple
     AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey)
     AnyKvKeyT_con = TypeVar("AnyKvKeyT_con", bound=AnyKvKey, contravariant=True)
@@ -397,7 +399,7 @@ class CreateKvEntryFn(Protocol[_T_co, AnyKvKeyT_con]):
 
 def is_kv_key_tuple(tup: tuple[object, ...]) -> TypeGuard[KvKeyTuple]:
     """Check if a tuple only contains valid KV key tuple type values."""
-    return len(tup) > 0 and all(isinstance(part, KV_KEY_PIECE_TYPES) for part in tup)
+    return all(isinstance(part, KV_KEY_PIECE_TYPES) for part in tup)
 
 
 @overload

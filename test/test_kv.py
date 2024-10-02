@@ -5,9 +5,12 @@ from datetime import datetime
 from datetime import timedelta
 from enum import StrEnum
 from functools import partial
+from itertools import repeat
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import AsyncGenerator
+from typing import Callable
+from typing import Mapping
 from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -26,6 +29,7 @@ from hypothesis import strategies as st
 from v8serialize import Decoder
 from yarl import URL
 
+from denokv import datapath
 from denokv._datapath_pb2 import KvEntry as ProtobufKvEntry
 from denokv._datapath_pb2 import ReadRangeOutput
 from denokv._datapath_pb2 import SnapshotRead
@@ -39,15 +43,17 @@ from denokv.auth import EndpointInfo
 from denokv.auth import HttpResponseMetadataExchangeDenoKvError
 from denokv.auth import MetadataExchangeDenoKvError
 from denokv.backoff import Backoff
-from denokv.backoff import attempts
 from denokv.datapath import AnyKvKey
 from denokv.datapath import AutoRetry
 from denokv.datapath import DataPathError
-from denokv.datapath import EndpointNotUsable
+from denokv.datapath import KvKeyTuple
 from denokv.datapath import RequestUnsuccessful
 from denokv.datapath import ResponseUnsuccessful
+from denokv.datapath import SnapshotReadResult
+from denokv.datapath import increment_packed_key
 from denokv.datapath import pack_key
 from denokv.errors import DenoKvError
+from denokv.errors import InvalidCursor
 from denokv.kv import AuthenticatorFn
 from denokv.kv import CachedValue
 from denokv.kv import DatabaseMetadataCache
@@ -55,6 +61,7 @@ from denokv.kv import EndpointSelector
 from denokv.kv import Kv
 from denokv.kv import KvEntry
 from denokv.kv import KVFlags
+from denokv.kv import KvListOptions
 from denokv.kv import KvU64
 from denokv.kv import VersionStamp
 from denokv.kv import normalize_key
@@ -62,8 +69,12 @@ from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
 from test.advance_time import advance_time
+from test.denokv_testing import ExampleCursorFormat
+from test.denokv_testing import MockKvDb
+from test.denokv_testing import add_entries
 from test.denokv_testing import assume_ok
 from test.denokv_testing import mk_db_meta
+from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 
 if TYPE_CHECKING:
     from typing import Generator
@@ -596,3 +607,353 @@ async def test_Kv_get__retries_retryable_snapshot_read_errors(
         for e in retry_errors[:-1]
         if e.auto_retry == AutoRetry.AFTER_METADATA_EXCHANGE
     )
+
+
+@pytest_mark_asyncio
+async def test_Kv_list__rejects_invalid_arguments(db: Kv) -> None:
+    with pytest.raises(ValueError, match=r"limit cannot be negative"):
+        async for _ in db.list(limit=-1):
+            raise AssertionError("should not generate values")
+
+    with pytest.raises(ValueError, match=r"batch_size cannot be < 1"):
+        async for _ in db.list(batch_size=0):
+            raise AssertionError("should not generate values")
+
+    with pytest.raises(InvalidCursor, match=r"cursor is not valid URL-safe base64"):
+        async for _ in db.list(cursor="x"):
+            raise AssertionError("should not generate values")
+
+
+def pack_example_cursor(key: KvKeyTuple) -> str:
+    return assume_ok(ExampleCursorFormat.INSTANCE.get_cursor_for_key(key))
+
+
+@pytest.mark.parametrize(
+    "range_options,cursor_key",
+    [
+        (dict(prefix=("c",)), ("b",)),
+        (dict(prefix=("c",)), ("d",)),
+        (dict(start=("c",)), ("b",)),
+        (dict(end=("c",)), ("c", 1)),
+    ],
+)
+@pytest_mark_asyncio
+async def test_Kv_list__rejects_cursor_outside_listed_range(
+    db: Kv, range_options: KvListOptions, cursor_key: KvKeyTuple
+) -> None:
+    with pytest.raises(
+        InvalidCursor, match=r"cursor is not within the the start and end key range"
+    ):
+        async for _ in db.list(
+            **KvListOptions(
+                **range_options,
+                cursor_format_type=ExampleCursorFormat,
+                cursor=pack_example_cursor(cursor_key),
+            )
+        ):
+            raise AssertionError("should not generate values")
+
+
+@pytest.fixture
+def mock_db() -> MockKvDb:
+    return MockKvDb()
+
+
+@pytest.fixture
+def list_example_entries() -> Mapping[KvKeyTuple, object]:
+    return {
+        **{("a", i): f"foo_{i}".encode() for i in range(4)},
+        **{("b", i): f"bar_{i}".encode() for i in range(4)},
+        **{("c", i): f"baz_{i}".encode() for i in range(4)},
+    }
+
+
+@pytest.fixture
+def mock_snapshot_read_to_return_mock_db_results(
+    mock_snapshot_read: AsyncMock, mock_db: MockKvDb
+) -> Callable[[], AsyncMock]:
+    async def snapshot_read_effect(
+        *,
+        session: aiohttp.ClientSession,
+        meta: DatabaseMetadata,
+        endpoint: EndpointInfo,
+        read: SnapshotRead,
+    ) -> SnapshotReadResult:
+        assert len(read.ranges) == 1
+        snapshot_read_output = SnapshotReadOutput(
+            ranges=[mock_db.snapshot_read_range(read.ranges[0])],
+            read_disabled=False,
+            read_is_strongly_consistent=True,
+            status=SnapshotReadStatus.SR_SUCCESS,
+        )
+        return Ok(snapshot_read_output)
+
+    def apply() -> AsyncMock:
+        mock_snapshot_read.side_effect = snapshot_read_effect
+        return mock_snapshot_read
+
+    return apply
+
+
+list_example_keys = st.one_of(
+    st.none(),
+    st.just(()),
+    st.tuples(st.sampled_from("_abcd")),
+    st.tuples(
+        st.sampled_from("_abcd"),
+        st.integers(min_value=-1, max_value=5),
+    ),
+)
+
+
+def list_example_cursors(
+    start: bytes, end: bytes
+) -> st.SearchStrategy[tuple[KvKeyTuple, str] | None]:
+    """Generate valid cursors for list_example_keys within a range."""
+    p0_choices = list("_abcd")
+    p1_choices = range(-1, 6)
+    possible_cursor_keys = [
+        k
+        for k in [
+            (),
+            *((p0,) for p0 in p0_choices),
+            *((p0, p1) for p0 in p0_choices for p1 in p1_choices),
+        ]
+        if start <= pack_key(k) < end
+    ]
+
+    if not possible_cursor_keys:
+        return st.none()
+
+    return st.one_of(
+        st.none(),
+        st.sampled_from(possible_cursor_keys).map(
+            lambda k: (k, assume_ok(ExampleCursorFormat.INSTANCE.get_cursor_for_key(k)))
+        ),
+    )
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(
+    data=st.data(),
+    prefix=list_example_keys,
+    start=list_example_keys,
+    end=list_example_keys,
+    limit=st.none() | st.integers(min_value=0, max_value=16),
+    reverse=st.none() | st.booleans(),
+    consistency=st.none() | st.sampled_from(ConsistencyLevel),
+    batch_size=st.none() | st.integers(min_value=1, max_value=16),
+)
+@pytest_mark_asyncio
+async def test_Kv_list__generates_values_from_sequential_snapshot_reads(
+    data: st.DataObject,
+    db: Kv,
+    mock_snapshot_read_to_return_mock_db_results: Callable[[], AsyncMock],
+    mock_db: MockKvDb,
+    list_example_entries: Mapping[KvKeyTuple, object],
+    prefix: KvKeyTuple | None,
+    start: KvKeyTuple | None,
+    end: KvKeyTuple | None,
+    limit: int | None,
+    reverse: bool | None,
+    consistency: ConsistencyLevel | None,
+    batch_size: int | None,
+) -> None:
+    mock_db.clear()
+    add_entries(mock_db, list_example_entries)
+    mock_snapshot_read_to_return_mock_db_results()
+
+    # Kv.list() should be equivalent to reading the listed range in one go.
+    listed_range = datapath.read_range_multi(
+        prefix=prefix,
+        start=start,
+        end=end,
+        limit=len(list_example_entries) if limit is None else limit,
+        reverse=reverse or False,
+    )
+
+    cursor: tuple[KvKeyTuple, str] | None = data.draw(
+        list_example_cursors(listed_range.start, listed_range.end)
+    )
+
+    cursor_str: None | str = None
+    # Specifying a cursor is equivalent to advancing the start/end boundary,
+    # according to direction.
+    if cursor is not None:
+        cursor_key, cursor_str = cursor
+        packed_cursor_key = pack_key(cursor_key)
+        if reverse:
+            listed_range.end = packed_cursor_key
+        else:
+            listed_range.start = increment_packed_key(packed_cursor_key)
+
+    listed_kv_entries = [
+        (kv_entry.key, kv_entry.value, kv_entry.versionstamp)
+        for kv_entry in (
+            unsafe_parse_protobuf_kv_entry(x)
+            for x in mock_db.snapshot_read_range(listed_range).values
+        )
+    ]
+
+    results: list[tuple[KvKeyTuple, object, VersionStamp]] = []
+    async for kv_entry in db.list(
+        prefix=prefix,
+        start=start,
+        end=end,
+        limit=limit,
+        reverse=reverse,
+        consistency=consistency,
+        batch_size=batch_size,
+        cursor=cursor_str,
+        cursor_format_type=ExampleCursorFormat,
+    ):
+        results.append((kv_entry.key, kv_entry.value, kv_entry.versionstamp))
+
+        # aside — entries from list() have the cursor value for the entry and a
+        # ListContext containing the details of the listing operation.
+        assert kv_entry.cursor == assume_ok(
+            ExampleCursorFormat.INSTANCE.get_cursor_for_key(kv_entry.key)
+        )
+        assert kv_entry.listing.prefix == prefix
+        assert kv_entry.listing.start == start
+        assert kv_entry.listing.end == end
+        assert kv_entry.listing.end == end
+        assert (
+            kv_entry.listing.packed_start
+            <= pack_key(kv_entry.key)
+            < kv_entry.listing.packed_end
+        )
+        assert kv_entry.listing.limit == limit
+        assert kv_entry.listing.cursor == cursor_str
+        assert kv_entry.listing.consistency == consistency or ConsistencyLevel.STRONG
+        assert kv_entry.listing.batch_size == batch_size or limit or 100
+        assert kv_entry.listing.cursor_format_type == ExampleCursorFormat
+        assert isinstance(kv_entry.listing.cursor_format, ExampleCursorFormat)
+
+    assert results == listed_kv_entries
+
+
+@pytest_mark_asyncio
+async def test_Kv_list__retries_retryable_snapshot_read_errors(
+    create_db: partial[Kv],
+    meta: DatabaseMetadata,
+    mock_snapshot_read: AsyncMock,
+    # mock_snapshot_read_to_return_mock_db_results: Callable[[], AsyncMock],
+    # mock_db: MockKvDb,
+    # list_example_entries: Mapping[KvKeyTuple, object],
+) -> None:
+    auth_fn = AsyncMock(name="auth_fn", return_value=Ok(meta))
+    db = create_db(retry=repeat(0), auth=auth_fn)
+
+    auth_fn.side_effect = [
+        Err(MetadataExchangeDenoKvError("Failed", retryable=True)),
+        Err(MetadataExchangeDenoKvError("Failed", retryable=True)),
+        Ok(meta),
+        Err(MetadataExchangeDenoKvError("Failed", retryable=True)),
+        Ok(meta),
+        Ok(meta),
+        Ok(meta),
+    ]
+
+    mock_snapshot_read.side_effect = [
+        Err(
+            ResponseUnsuccessful(
+                message="Example",
+                body_text="Oops",
+                status=500,
+                endpoint=EndpointInfo(
+                    url=URL("https://example"), consistency=ConsistencyLevel.STRONG
+                ),
+                auto_retry=AutoRetry.AFTER_BACKOFF,
+            )
+        ),
+        Err(
+            ResponseUnsuccessful(
+                message="Example",
+                body_text="Oops",
+                status=500,
+                endpoint=EndpointInfo(
+                    url=URL("https://example"), consistency=ConsistencyLevel.STRONG
+                ),
+                auto_retry=AutoRetry.AFTER_METADATA_EXCHANGE,
+            )
+        ),
+        Ok(
+            SnapshotReadOutput(
+                ranges=[
+                    ReadRangeOutput(
+                        values=[
+                            pack_kv_entry(("a", 1), b"x1"),
+                            pack_kv_entry(("a", 2), b"x2"),
+                        ]
+                    )
+                ],
+                read_is_strongly_consistent=True,
+                status=SnapshotReadStatus.SR_SUCCESS,
+            )
+        ),
+        Err(
+            ResponseUnsuccessful(
+                message="Example",
+                body_text="Oops",
+                status=500,
+                endpoint=EndpointInfo(
+                    url=URL("https://example"), consistency=ConsistencyLevel.STRONG
+                ),
+                auto_retry=AutoRetry.AFTER_BACKOFF,
+            )
+        ),
+        Err(
+            ResponseUnsuccessful(
+                message="Example",
+                body_text="Oops",
+                status=500,
+                endpoint=EndpointInfo(
+                    url=URL("https://example"), consistency=ConsistencyLevel.STRONG
+                ),
+                auto_retry=AutoRetry.AFTER_METADATA_EXCHANGE,
+            )
+        ),
+        Ok(
+            SnapshotReadOutput(
+                ranges=[
+                    ReadRangeOutput(
+                        values=[
+                            pack_kv_entry(("a", 3), b"x3"),
+                            pack_kv_entry(("a", 4), b"x4"),
+                        ]
+                    )
+                ],
+                read_is_strongly_consistent=True,
+                status=SnapshotReadStatus.SR_SUCCESS,
+            )
+        ),
+        Err(
+            ResponseUnsuccessful(
+                message="Example",
+                body_text="Oops",
+                status=500,
+                endpoint=EndpointInfo(
+                    url=URL("https://example"), consistency=ConsistencyLevel.STRONG
+                ),
+                auto_retry=AutoRetry.AFTER_METADATA_EXCHANGE,
+            )
+        ),
+        # Empty result - end
+        Ok(
+            SnapshotReadOutput(
+                ranges=[ReadRangeOutput(values=[])],
+                read_is_strongly_consistent=True,
+                status=SnapshotReadStatus.SR_SUCCESS,
+            )
+        ),
+    ]
+
+    results: list[tuple[KvKeyTuple, object, VersionStamp]] = []
+    async for kv_entry in db.list(batch_size=2):
+        results.append((kv_entry.key, kv_entry.value, kv_entry.versionstamp))
+
+    assert results == [
+        (("a", x), f"x{x}".encode(), VersionStamp(1)) for x in range(1, 5)
+    ]
+    assert len(auth_fn.mock_calls) == 7

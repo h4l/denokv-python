@@ -4,7 +4,9 @@ import asyncio
 from datetime import datetime
 from datetime import timedelta
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from unittest.mock import AsyncMock
@@ -17,7 +19,9 @@ import pytest
 import pytest_asyncio
 import v8serialize
 from fdb.tuple import unpack
+from hypothesis import HealthCheck
 from hypothesis import given
+from hypothesis import settings
 from hypothesis import strategies as st
 from v8serialize import Decoder
 from yarl import URL
@@ -35,8 +39,15 @@ from denokv.auth import EndpointInfo
 from denokv.auth import HttpResponseMetadataExchangeDenoKvError
 from denokv.auth import MetadataExchangeDenoKvError
 from denokv.backoff import Backoff
+from denokv.backoff import attempts
 from denokv.datapath import AnyKvKey
+from denokv.datapath import AutoRetry
+from denokv.datapath import DataPathError
+from denokv.datapath import EndpointNotUsable
+from denokv.datapath import RequestUnsuccessful
+from denokv.datapath import ResponseUnsuccessful
 from denokv.datapath import pack_key
+from denokv.errors import DenoKvError
 from denokv.kv import AuthenticatorFn
 from denokv.kv import CachedValue
 from denokv.kv import DatabaseMetadataCache
@@ -354,20 +365,26 @@ def kv_flags() -> KVFlags:
 
 
 @pytest.fixture
-def db(
+def create_db(
     client_session: aiohttp.ClientSession,
     auth_fn: AuthenticatorFn,
     retry_delays: Backoff,
     v8_decoder: Decoder,
     kv_flags: KVFlags,
-) -> Kv:
-    return Kv(
+) -> partial[Kv]:
+    return partial(
+        Kv,
         session=client_session,
         auth=auth_fn,
         retry=retry_delays,
         v8_decoder=v8_decoder,
         flags=kv_flags,
     )
+
+
+@pytest.fixture
+def db(create_db: partial[Kv]) -> Kv:
+    return create_db()
 
 
 def pack_kv_entry(
@@ -495,3 +512,87 @@ async def test_Kv_get__treats_int_as_float_when_IntAsNumber_enabled(
     start_key = unpack(read_input.ranges[0].start)
     assert start_key == k
     assert type(start_key[1]) is int_type
+
+
+def retryable_errors(
+    *, auto_retries: st.SearchStrategy[AutoRetry]
+) -> st.SearchStrategy[RequestUnsuccessful | ResponseUnsuccessful]:
+    """Generate DataPathError exceptions with retryable auto_retry values."""
+    return st.one_of(
+        st.builds(
+            lambda auto_retry: RequestUnsuccessful(
+                message="Example",
+                endpoint=EndpointInfo(
+                    url=URL("https://example"), consistency=ConsistencyLevel.STRONG
+                ),
+                auto_retry=auto_retry,
+            ),
+            auto_retries,
+        ),
+        st.builds(
+            lambda auto_retry: ResponseUnsuccessful(
+                message="Example",
+                body_text="Oops",
+                status=500,
+                endpoint=EndpointInfo(
+                    url=URL("https://example"), consistency=ConsistencyLevel.STRONG
+                ),
+                auto_retry=auto_retry,
+            ),
+            auto_retries,
+        ),
+    )
+
+
+meta_backoff_retryable_errors = retryable_errors(
+    auto_retries=st.sampled_from(
+        [AutoRetry.AFTER_BACKOFF, AutoRetry.AFTER_METADATA_EXCHANGE]
+    )
+)
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(data=st.data(), retry_delays=st.sampled_from([[], [1.0], [1.0, 2.0, 4.0]]))
+@pytest_mark_asyncio
+async def test_Kv_get__retries_retryable_snapshot_read_errors(
+    create_db: partial[Kv],
+    meta: DatabaseMetadata,
+    mock_snapshot_read: AsyncMock,
+    data: st.DataObject,
+    retry_delays: Backoff,
+) -> None:
+    auth_fn = AsyncMock(name="auth_fn", return_value=Ok(meta))
+    db = create_db(retry=retry_delays, auth=auth_fn)
+    retry_errors: list[DataPathError] = []
+
+    def fail_with_retryable_error(*args: Any, **kwargs: Any) -> Err[DenoKvError]:
+        err = data.draw(meta_backoff_retryable_errors)
+        retry_errors.append(err)
+        assert err.auto_retry in {
+            AutoRetry.AFTER_BACKOFF,
+            AutoRetry.AFTER_METADATA_EXCHANGE,
+        }
+        return Err(err)
+
+    mock_snapshot_read.side_effect = fail_with_retryable_error
+
+    with pytest.raises(DenoKvError) as exc_info:
+        future_get = asyncio.create_task(db.get(("a",)))
+
+        # fast-forward each retry's sleep as it occurs to save test time
+        for delay in retry_delays:
+            await advance_time(delay, pre_ticks=10)
+        await future_get
+
+    # The get() fails with the error on the final (non-retried) attempt
+    assert exc_info.value == retry_errors[-1]
+
+    # Retries AFTER_METADATA_EXCHANGE invalidate the metadata cache before
+    # retrying, auth_fn should be called once at the first attempt plus once for
+    # each AFTER_METADATA_EXCHANGE error, other than the last, which isn't
+    # retried
+    assert len(auth_fn.mock_calls) == 1 + sum(
+        1
+        for e in retry_errors[:-1]
+        if e.auto_retry == AutoRetry.AFTER_METADATA_EXCHANGE
+    )

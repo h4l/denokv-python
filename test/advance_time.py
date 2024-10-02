@@ -54,13 +54,22 @@ class AdvancedTime:
 advance_time_listeners: Final[set[Callable[[float], None]]] = set()
 
 
-async def advance_time(seconds: float) -> None:
+async def advance_time(seconds: float, pre_ticks: int = 1) -> None:
     """
     Fast-forward event loop time, running any tasks/timers that have been created.
 
     The current event loop's time() method will be wrapped with `AdvancedTime`
     to offset its time into the future and the loop's tasks will be executed up
     to the new time.
+
+    Parameters
+    ----------
+    seconds
+        The amount of loop time to skip in seconds.
+    pre_ticks
+        The number of event loop ticks to wait before sleeping. Multiple ticks
+        may be needed to get asynchronously-created timers enqueued in the loop
+        before advancing time to skip them.
 
     Notes
     -----
@@ -75,6 +84,8 @@ async def advance_time(seconds: float) -> None:
     """
     if not (seconds >= 0):
         raise ValueError(f"seconds must be >= 0: {seconds=}")
+    if pre_ticks < 1:
+        raise ValueError(f"pre_ticks must be > 0: {pre_ticks}")
     loop = asyncio.get_running_loop()
     if not isinstance(loop.time, AdvancedTime):
         loop.time = AdvancedTime(unadvanced=loop.time)  # type: ignore[method-assign]
@@ -83,7 +94,8 @@ async def advance_time(seconds: float) -> None:
     # Creating a task is not enough to have it scheduled as a timer yet. It must
     # be scheduled before advancing the loop's time, otherwise it gets scheduled
     # after the time has advanced and then sleeps the full amount.
-    await asyncio.sleep(0)
+    for _ in range(pre_ticks):
+        await asyncio.sleep(0)
     loop.time.advance_time(seconds)
 
     for listener in advance_time_listeners:

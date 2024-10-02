@@ -1,4 +1,5 @@
 from datetime import datetime
+from datetime import timedelta
 from typing import Sequence
 from typing import TypeVar
 from uuid import UUID
@@ -23,7 +24,7 @@ def mk_db_meta(endpoints: Sequence[EndpointInfo]) -> DatabaseMetadata:
     return DatabaseMetadata(
         version=3,
         database_id=UUID("00000000-0000-0000-0000-000000000000"),
-        expires_at=datetime(2024, 1, 1),
+        expires_at=datetime.now() + timedelta(hours=1),
         endpoints=[*endpoints],
         token="secret",
     )

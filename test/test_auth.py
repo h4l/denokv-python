@@ -27,6 +27,8 @@ from denokv.auth import InvalidMetadataResponseDenoKvError
 from denokv.auth import MetadataExchangeDenoKvError
 from denokv.auth import get_database_metadata
 from denokv.auth import read_metadata_exchange_response
+from test.denokv_testing import assume_err
+from test.denokv_testing import assume_ok
 
 pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
 
@@ -65,7 +67,7 @@ def test_read_metadata_exchange_response__parses_valid_data(
         "expiresAt": "2024-08-05T05:13:59.500444679Z",
     }
 
-    dbmeta = read_metadata_exchange_response(data, base_url=base_url)
+    dbmeta = assume_ok(read_metadata_exchange_response(data, base_url=base_url))
 
     assert dbmeta == DatabaseMetadata(
         version=version,
@@ -131,9 +133,9 @@ def test_read_metadata_exchange_response__rejects_invalid_data(
         invalid_data, base_url=URL("https://example.com/")
     )
 
-    assert isinstance(result, InvalidMetadataResponseDenoKvError)
-    assert result.data == invalid_data
-    assert result.message == message
+    error = assume_err(result, InvalidMetadataResponseDenoKvError)
+    assert error.data == invalid_data
+    assert error.message == message
 
 
 @pytest.fixture
@@ -267,7 +269,7 @@ async def test_get_database_metadata__handles_unsuccessful_responses(
         session=client.session, server_url=server_url, access_token="foo"
     )
 
-    assert result == error
+    assert assume_err(result) == error
 
 
 @pytest_mark_asyncio
@@ -281,7 +283,7 @@ async def test_get_database_metadata__handles_network_error(
         session=client.session, server_url=server_url, access_token="foo"
     )
 
-    assert result == HttpRequestMetadataExchangeDenoKvError(
+    assert assume_err(result) == HttpRequestMetadataExchangeDenoKvError(
         "Failed to make HTTP request to KV server to exchange metadata", retryable=True
     )
 
@@ -294,12 +296,12 @@ async def test_get_database_metadata__handles_invalid_initial_server_url(
         session=client.session, server_url="http://example.com:XXX", access_token="foo"
     )
 
-    assert result == HttpRequestMetadataExchangeDenoKvError(
+    error = assume_err(result)
+    assert error == HttpRequestMetadataExchangeDenoKvError(
         "Failed to make HTTP request to KV server to exchange metadata", retryable=False
     )
-    assert isinstance(result, MetadataExchangeDenoKvError)  # mypy needs help
-    assert isinstance(result.__cause__, aiohttp.InvalidURL)
-    assert "http://example.com:XXX" in str(result.__cause__)
+    assert isinstance(error.__cause__, aiohttp.InvalidURL)
+    assert "http://example.com:XXX" in str(error.__cause__)
 
 
 @pytest_mark_asyncio
@@ -311,15 +313,15 @@ async def test_get_database_metadata__handles_invalid_metadata(
         session=client.session, server_url=server_url, access_token="foo"
     )
 
-    assert result == InvalidMetadataExchangeDenoKvError(
+    error = assume_err(result)
+    assert error == InvalidMetadataExchangeDenoKvError(
         "Server responded to metadata exchange with invalid metadata",
         data={"version": 4},
         retryable=False,
     )
-    assert isinstance(result, MetadataExchangeDenoKvError)  # mypy needs help
     assert (
-        isinstance(result.__cause__, InvalidMetadataResponseDenoKvError)
-        and result.__cause__.message == "unsupported version: 4"
+        isinstance(error.__cause__, InvalidMetadataResponseDenoKvError)
+        and error.__cause__.message == "unsupported version: 4"
     )
 
 
@@ -332,9 +334,9 @@ async def test_get_database_metadata__reject_metadata_without_strong_consistency
         session=client.session, server_url=server_url, access_token="foo"
     )
 
-    assert isinstance(result, InvalidMetadataExchangeDenoKvError)
+    error = assume_err(result, InvalidMetadataExchangeDenoKvError)
     assert (
-        result.message == "Server responded to metadata exchange without any "
+        error.message == "Server responded to metadata exchange without any "
         "strong consistency endpoints"
     )
 
@@ -350,8 +352,7 @@ async def test_get_database_metadata__returns_metadata_from_valid_response(
         session=client.session, server_url=server_url, access_token="hunter2"
     )
 
-    assert isinstance(result, DatabaseMetadata)
-    assert result.version == version
+    assert assume_ok(result).version == version
 
 
 @pytest.mark.parametrize("status", [307, 308])
@@ -374,10 +375,12 @@ async def test_get_database_metadata__follows_redirect_during_exchange(
         session=client.session, server_url=server_url, access_token="hunter2"
     )
 
-    assert isinstance(result, DatabaseMetadata)
-    assert result == read_metadata_exchange_response(
-        valid_metadata_exchange_response, base_url=redirected_url
+    expected = assume_ok(
+        read_metadata_exchange_response(
+            valid_metadata_exchange_response, base_url=redirected_url
+        )
     )
+    assert assume_ok(result) == expected
 
 
 @pytest.mark.parametrize("status", [301, 302, 303])
@@ -402,5 +405,5 @@ async def test_get_database_metadata__does_not_follow_ambiguous_redirects(
         session=client.session, server_url=server_url, access_token="hunter2"
     )
 
-    assert isinstance(result, HttpResponseMetadataExchangeDenoKvError)
-    assert result.status == 405  # method not allowed because we switched to GET
+    error = assume_err(result, HttpResponseMetadataExchangeDenoKvError)
+    assert error.status == 405  # method not allowed because we switched to GET

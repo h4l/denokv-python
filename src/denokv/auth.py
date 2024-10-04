@@ -14,6 +14,9 @@ from yarl import URL
 
 from denokv.errors import DenoKvError
 from denokv.errors import DenoKvValidationError
+from denokv.result import Err
+from denokv.result import Ok
+from denokv.result import Result
 
 
 @dataclass(slots=True, frozen=True)
@@ -74,29 +77,29 @@ class InvalidMetadataResponseDenoKvError(DenoKvValidationError):
 
 def read_metadata_exchange_response(
     data: object, *, base_url: URL
-) -> DatabaseMetadata | InvalidMetadataResponseDenoKvError:
+) -> Result[DatabaseMetadata, InvalidMetadataResponseDenoKvError]:
     # This is caused by using the fn incorrectly, not a data error, so throw)
     if not base_url.is_absolute():
         raise TypeError("base_url is not absolute")
 
-    Err = InvalidMetadataResponseDenoKvError
+    Error = InvalidMetadataResponseDenoKvError
     if not isinstance(data, Mapping):
-        return Err("JSON value is not an object", data)
+        return Err(Error("JSON value is not an object", data))
     version = data.get("version")
     if not (isinstance(version, int) and 1 <= version <= 3):
-        return Err(f"unsupported version: {version!r}", data)
+        return Err(Error(f"unsupported version: {version!r}", data))
 
     raw_database_id = data.get("databaseId") or data.get("uuid")
     try:
         database_id = UUID(raw_database_id)
     except ValueError as e:
-        err = Err(f"databaseId/uuid is not a UUID: {raw_database_id!r}", data=data)
+        err = Error(f"databaseId/uuid is not a UUID: {raw_database_id!r}", data=data)
         err.__cause__ = e
-        return err
+        return Err(err)
 
     token = data.get("token")
     if not (isinstance(token, str) and len(token) > 0):
-        return Err("token is not a non-empty string", data)
+        return Err(Error("token is not a non-empty string", data))
 
     raw_expires_at = data.get("expiresAt")
     try:
@@ -104,17 +107,17 @@ def read_metadata_exchange_response(
             raise TypeError("value must be a string")
         expires_at = datetime.fromisoformat(raw_expires_at)
     except (TypeError, ValueError) as e:
-        err = Err(f"expiresAt is not an ISO date-time: {raw_expires_at!r}", data=data)
+        err = Error(f"expiresAt is not an ISO date-time: {raw_expires_at!r}", data=data)
         err.__cause__ = e
-        return err
+        return Err(err)
 
     raw_endpoints = data.get("endpoints")
     if not isinstance(raw_endpoints, Sequence):
-        return Err("endpoints is not an array", data)
+        return Err(Error("endpoints is not an array", data))
     endpoints: list[EndpointInfo] = []
     for i, raw_endpoint in enumerate(raw_endpoints):
         if not isinstance(raw_endpoint, Mapping):
-            return Err(f"endpoints[{i}] is not an object", data)
+            return Err(Error(f"endpoints[{i}] is not an object", data))
         raw_url = raw_endpoint.get("url")
         try:
             if not isinstance(raw_url, str):
@@ -125,9 +128,9 @@ def read_metadata_exchange_response(
             # TODO: JSON schema comments that URL must not end with /. Should we
             #   validate/enforce this? or later when using URLs?
         except (TypeError, ValueError) as e:
-            err = Err(f"endpoints[{i}].url is invalid", data=data)
+            err = Error(f"endpoints[{i}].url is invalid", data=data)
             err.__cause__ = e
-            return err
+            return Err(err)
 
         raw_consistency = raw_endpoint.get("consistency")
         try:
@@ -136,19 +139,23 @@ def read_metadata_exchange_response(
             consistency = ConsistencyLevel(raw_consistency)
         except (TypeError, ValueError):
             return Err(
-                f"endpoints[{i}].consistency is not one of "
-                f"{', '.join(ConsistencyLevel)}",
-                data=data,
+                Error(
+                    f"endpoints[{i}].consistency is not one of "
+                    f"{', '.join(ConsistencyLevel)}",
+                    data=data,
+                )
             )
 
         endpoints.append(EndpointInfo(url=url, consistency=consistency))
 
-    return DatabaseMetadata(
-        version=version,
-        database_id=database_id,
-        endpoints=tuple(endpoints),
-        token=token,
-        expires_at=expires_at,
+    return Ok(
+        DatabaseMetadata(
+            version=version,
+            database_id=database_id,
+            endpoints=tuple(endpoints),
+            token=token,
+            expires_at=expires_at,
+        )
     )
 
 
@@ -211,7 +218,7 @@ async def get_database_metadata(
     session: aiohttp.ClientSession,
     server_url: str | URL,
     access_token: str,
-) -> DatabaseMetadata | MetadataExchangeDenoKvError:
+) -> Result[DatabaseMetadata, MetadataExchangeDenoKvError]:
     err: MetadataExchangeDenoKvError
     try:
         async with session.post(
@@ -223,28 +230,34 @@ async def get_database_metadata(
             if not response.ok:
                 body_text = await response.text()
                 if 400 <= response.status < 500:
-                    return HttpResponseMetadataExchangeDenoKvError(
-                        "Server rejected metadata exchange request indicating "
-                        "client error",
-                        status=response.status,
-                        body_text=body_text,
-                        retryable=False,
+                    return Err(
+                        HttpResponseMetadataExchangeDenoKvError(
+                            "Server rejected metadata exchange request indicating "
+                            "client error",
+                            status=response.status,
+                            body_text=body_text,
+                            retryable=False,
+                        )
                     )
                 elif 500 <= response.status < 600:
-                    return HttpResponseMetadataExchangeDenoKvError(
-                        "Server failed to respond to metadata exchange request "
-                        "indicating server error",
-                        status=response.status,
-                        body_text=body_text,
-                        retryable=True,
+                    return Err(
+                        HttpResponseMetadataExchangeDenoKvError(
+                            "Server failed to respond to metadata exchange request "
+                            "indicating server error",
+                            status=response.status,
+                            body_text=body_text,
+                            retryable=True,
+                        )
                     )
                 else:
-                    return HttpResponseMetadataExchangeDenoKvError(
-                        "Server responded to metadata exchange request with "
-                        "unexpected status",
-                        status=response.status,
-                        body_text=body_text,
-                        retryable=False,
+                    return Err(
+                        HttpResponseMetadataExchangeDenoKvError(
+                            "Server responded to metadata exchange request with "
+                            "unexpected status",
+                            status=response.status,
+                            body_text=body_text,
+                            retryable=False,
+                        )
                     )
             data = await response.json()
             base_url = response.history[-1].url if response.history else URL(server_url)
@@ -258,25 +271,28 @@ async def get_database_metadata(
             retryable=retryable,
         )
         err.__cause__ = e
-        return err
+        return Err(err)
 
     result = read_metadata_exchange_response(data, base_url=base_url)
-    if isinstance(result, BaseException):
+    if isinstance(result, Err):
         err = InvalidMetadataExchangeDenoKvError(
             "Server responded to metadata exchange with invalid metadata",
             data=data,
             retryable=False,
         )
-        err.__cause__ = result
-        return err
+        err.__cause__ = result.error
+        return Err(err)
+    meta = result.value
 
     # Semantic validation
-    if not any(e.consistency == ConsistencyLevel.STRONG for e in result.endpoints):
-        return InvalidMetadataExchangeDenoKvError(
-            f"Server responded to metadata exchange without any "
-            f"{ConsistencyLevel.STRONG} consistency endpoints",
-            data=result,
-            retryable=False,
+    if not any(e.consistency == ConsistencyLevel.STRONG for e in meta.endpoints):
+        return Err(
+            InvalidMetadataExchangeDenoKvError(
+                f"Server responded to metadata exchange without any "
+                f"{ConsistencyLevel.STRONG} consistency endpoints",
+                data=meta,
+                retryable=False,
+            )
         )
 
-    return result
+    return Ok(meta)

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from enum import Flag
 from enum import auto
+from os import environ
 from typing import TYPE_CHECKING
 from typing import AsyncIterator
 from typing import Awaitable
@@ -27,6 +28,7 @@ import aiohttp
 from fdb.tuple import pack
 from fdb.tuple import unpack
 from v8serialize import Decoder
+from yarl import URL
 
 from denokv import datapath
 from denokv._datapath_pb2 import ReadRange
@@ -37,6 +39,7 @@ from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo
 from denokv.auth import MetadataExchangeDenoKvError
+from denokv.auth import get_database_metadata
 from denokv.backoff import Backoff
 from denokv.backoff import ExponentialBackoff
 from denokv.backoff import attempts
@@ -112,7 +115,7 @@ class ListKvEntry(KvEntry[AnyKvKeyT, T]):
     from the value after this.
     """
 
-    listing: ListContext
+    listing: ListContext = field(repr=False)
 
     @property
     def cursor(self) -> str:
@@ -364,25 +367,43 @@ The metadata contains the server URLs and access tokens needed to query the KV
 database.
 """
 
-# get_database_metadata with retry:
-# TODO: have auth module handle this
-#
-# async def reload(
-#         self,
-#     ) -> Result[CachedValue[DatabaseMetadata], MetadataExchangeDenoKvError]:
-#     result: DatabaseMetadata | MetadataExchangeDenoKvError
-#     for delay in attempts(self.backoff):
-#         result = await get_database_metadata()
-#         if isinstance(result, MetadataExchangeDenoKvError):
-#             if result.retryable:
-#                 await asyncio.sleep(delay)
-#                 continue
-#             return Err(result)
-#         else:
-#             return Ok(CachedValue(result.expires_at.timestamp(), value=result))
-#     else:  # backoff timed out
-#         assert isinstance(result, MetadataExchangeDenoKvError)
-#         return Err(result)
+
+@dataclass(frozen=True, slots=True)
+class KvCredentials:
+    server_url: URL
+    access_token: str
+
+
+@dataclass
+class Authenticator:
+    """
+    Authenticates with a KV database server and returns its metadata.
+
+    Notes
+    -----
+    This is an [AuthenticationFn](`denokv.kv.AuthenticationFn`).
+    """
+
+    session: aiohttp.ClientSession
+    retry_delays: Backoff
+    credentials: KvCredentials
+
+    async def __call__(self) -> Result[DatabaseMetadata, MetadataExchangeDenoKvError]:
+        result: Result[DatabaseMetadata, MetadataExchangeDenoKvError] | None = None
+        credentials = self.credentials
+        for delay in attempts(self.retry_delays):
+            result = await get_database_metadata(
+                session=self.session,
+                server_url=credentials.server_url,
+                access_token=credentials.access_token,
+            )
+            if isinstance(result, Err) and result.error.retryable:
+                await asyncio.sleep(delay)
+                continue
+            return result
+        else:  # backoff timed out
+            assert isinstance(result, Err)
+            return result
 
 
 def _cached_database_metadata(value: DatabaseMetadata) -> CachedValue[DatabaseMetadata]:
@@ -994,3 +1015,60 @@ def _common_prefix_length(a: Sequence[object], b: Sequence[object]) -> int:
             match_length -= 1
             break
     return match_length
+
+
+def open_kv(
+    target: URL | str | KvCredentials,
+    *,
+    access_token: str | None = None,
+    session: aiohttp.ClientSession | None = None,
+    flags: KVFlags | None = None,
+) -> Kv:
+    """
+    Create a connection to a KV database.
+
+    [yarl]: `yarl.URL`
+    [DEFAULT_KV_FLAGS]: `denokv.kv.DEFAULT_KV_FLAGS`
+
+    Parameters
+    ----------
+    target
+        The Deno KV database server to connect to. Can be a string or [yarl] URL.
+    access_token
+        The secret access token to authenticate to the target database with.
+        Default: The environment variable `DENO_KV_ACCESS_TOKEN` is read.
+    session
+        The HTTP client session to use to communicate with the database.
+        Default: A new session is created.
+    flags
+        Enable/disable flags that change Kv behaviour. Default: [DEFAULT_KV_FLAGS]
+
+    Notes
+    -----
+    Although this not an async function, it must be run in the context of an
+    asyncio event loop if `session` is not provided, because creating a
+    aiohttp.ClientSession requires a loop.
+    """
+    if isinstance(target, str):
+        try:
+            target = URL(target)
+        except ValueError as e:
+            raise ValueError(
+                f"Cannot open KV database: target argument str is not a "
+                f"valid URL: {e}"
+            ) from e
+    if isinstance(target, URL):
+        if access_token is None:
+            access_token = environ.get("DENO_KV_ACCESS_TOKEN") or None
+        if access_token is None:
+            raise ValueError(
+                "Cannot open KV database: access_token argument is None and "
+                "DENO_KV_ACCESS_TOKEN environment variable is not set"
+            )
+
+        target = KvCredentials(server_url=target, access_token=access_token)
+
+    session = session or aiohttp.ClientSession()
+    retry = ExponentialBackoff()
+    auth = Authenticator(session=session, retry_delays=retry, credentials=target)
+    return Kv(session=session, auth=auth, retry=retry, flags=flags)

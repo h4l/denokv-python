@@ -54,6 +54,7 @@ from denokv.datapath import increment_packed_key
 from denokv.datapath import pack_key
 from denokv.errors import DenoKvError
 from denokv.errors import InvalidCursor
+from denokv.kv import Authenticator
 from denokv.kv import AuthenticatorFn
 from denokv.kv import CachedValue
 from denokv.kv import DatabaseMetadataCache
@@ -65,6 +66,7 @@ from denokv.kv import KvListOptions
 from denokv.kv import KvU64
 from denokv.kv import VersionStamp
 from denokv.kv import normalize_key
+from denokv.kv import open_kv
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
@@ -957,3 +959,51 @@ async def test_Kv_list__retries_retryable_snapshot_read_errors(
         (("a", x), f"x{x}".encode(), VersionStamp(1)) for x in range(1, 5)
     ]
     assert len(auth_fn.mock_calls) == 7
+
+
+def test_open_kv__requires_event_loop_to_default_session() -> None:
+    with pytest.raises(RuntimeError, match=r"no running event loop"):
+        open_kv("http://0.0.0.0")
+
+
+def test_open_kv__validates_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DENO_KV_ACCESS_TOKEN")
+
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot open KV database: target argument str is not a valid URL:",
+    ):
+        open_kv("http://0.0.0.0:invalid")
+
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot open KV database: access_token argument is None and "
+        r"DENO_KV_ACCESS_TOKEN environment variable is not set",
+    ):
+        open_kv("http://0.0.0.0")  # no access token
+
+
+@pytest_mark_asyncio
+async def test_open_kv(
+    client_session: aiohttp.ClientSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DENO_KV_ACCESS_TOKEN", "envsecret")
+
+    kv = open_kv("https://0.0.0.0/example")
+    assert isinstance(kv.metadata_cache.get_database_metadata, Authenticator)
+    credentials = kv.metadata_cache.get_database_metadata.credentials
+    assert credentials.server_url == URL("https://0.0.0.0/example")
+    assert credentials.access_token == "envsecret"
+    await kv.session.close()
+
+    kv = open_kv(
+        "https://0.0.0.0/example",
+        access_token="argsecret",
+        session=client_session,
+        flags=KVFlags.NoFlag,
+    )
+    assert kv.session is client_session
+    assert kv.flags == KVFlags.NoFlag
+    assert isinstance(kv.metadata_cache.get_database_metadata, Authenticator)
+    credentials = kv.metadata_cache.get_database_metadata.credentials
+    assert credentials.access_token == "argsecret"

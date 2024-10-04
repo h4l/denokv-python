@@ -1,11 +1,20 @@
 [tool.poetry]
 name = "denokv"
-version = "0.1.0"
+version = "0.1.0-alpha.dev"
 description = "Connect to Deno KV databases from Python."
 authors = ["Hal Blackburn <hwtb2@cam.ac.uk>"]
 license = "MIT"
 readme = "README.md"
 packages = [{ include = "denokv", from = "src" }]
+homepage = "https://github.com/h4l/denokv-python"
+repository = "https://github.com/h4l/denokv-python"
+documentation = "https://github.com/h4l/denokv-python"
+classifiers = [
+  "Topic :: Database :: Front-Ends",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Framework :: AsyncIO",
+  "Development Status :: 2 - Pre-Alpha",
+]
 
 [tool.poetry.dependencies]
 # Python 3.9 will be supported, but this requires some work to backport things

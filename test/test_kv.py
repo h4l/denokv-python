@@ -220,9 +220,7 @@ async def test_DatabaseMetadataCache__reloads_meta_from_fn(
 
     meta_1 = assume_ok(await get_db_metadata())
 
-    cache = DatabaseMetadataCache(
-        get_database_metadata=mock_get_db_metadata, initial=meta_1
-    )
+    cache = DatabaseMetadataCache(authenticator=mock_get_db_metadata, initial=meta_1)
     assert cache.current is not None
     assert cache.current.is_fresh(time=loop_time())
     assert assume_ok(await cache.get()) is meta_1
@@ -259,7 +257,7 @@ async def test_DatabaseMetadataCache__combines_concurrent_reloads_into_1_call(
     future_meta_1: GetDbMetaFuture = asyncio.Future()
     mock_get_db_metadata = Mock(side_effect=lambda: future_meta_1)
 
-    cache = DatabaseMetadataCache(get_database_metadata=mock_get_db_metadata)
+    cache = DatabaseMetadataCache(authenticator=mock_get_db_metadata)
 
     future_gets = asyncio.gather(cache.get(), cache.get(), cache.get())
     asyncio.get_event_loop().call_soon(lambda: future_meta_1.set_result(Ok(meta_1)))
@@ -283,7 +281,7 @@ async def test_DatabaseMetadataCache__handles_failed_auth_calls(
     # Mock returns the future 1 then 2 on sequential calls
     mock_get_db_metadata = Mock(side_effect=[future_meta_1, future_meta_2])
 
-    cache = DatabaseMetadataCache(get_database_metadata=mock_get_db_metadata)
+    cache = DatabaseMetadataCache(authenticator=mock_get_db_metadata)
 
     future_gets_1 = asyncio.gather(cache.get(), cache.get(), cache.get())
     asyncio.get_running_loop().call_soon(lambda: future_meta_1.set_result(Err(error)))
@@ -990,8 +988,8 @@ async def test_open_kv(
     monkeypatch.setenv("DENO_KV_ACCESS_TOKEN", "envsecret")
 
     kv = open_kv("https://0.0.0.0/example")
-    assert isinstance(kv.metadata_cache.get_database_metadata, Authenticator)
-    credentials = kv.metadata_cache.get_database_metadata.credentials
+    assert isinstance(kv.metadata_cache.authenticator, Authenticator)
+    credentials = kv.metadata_cache.authenticator.credentials
     assert credentials.server_url == URL("https://0.0.0.0/example")
     assert credentials.access_token == "envsecret"
     await kv.session.close()
@@ -1004,6 +1002,6 @@ async def test_open_kv(
     )
     assert kv.session is client_session
     assert kv.flags == KvFlags.NoFlag
-    assert isinstance(kv.metadata_cache.get_database_metadata, Authenticator)
-    credentials = kv.metadata_cache.get_database_metadata.credentials
+    assert isinstance(kv.metadata_cache.authenticator, Authenticator)
+    credentials = kv.metadata_cache.authenticator.credentials
     assert credentials.access_token == "argsecret"

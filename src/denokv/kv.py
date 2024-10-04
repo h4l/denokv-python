@@ -457,7 +457,7 @@ def normalize_key(key: KvKeyTuple, *, bigints: bool = False) -> KvKeyTuple:
 
 @dataclass(init=False)
 class DatabaseMetadataCache:
-    get_database_metadata: AuthenticatorFn
+    authenticator: AuthenticatorFn
     current: CachedValue[DatabaseMetadata] | None
     pending: (
         asyncio.Task[Result[CachedValue[DatabaseMetadata], MetadataExchangeDenoKvError]]
@@ -468,12 +468,12 @@ class DatabaseMetadataCache:
         self,
         *,
         initial: DatabaseMetadata | None = None,
-        get_database_metadata: AuthenticatorFn,
+        authenticator: AuthenticatorFn,
     ) -> None:
         # Can start as None, in which case reload happens on first access.
         self.current = _cached_database_metadata(initial) if initial else None
         self.pending = None
-        self.get_database_metadata = get_database_metadata
+        self.authenticator = authenticator
 
     async def get(
         self, now: float | None = None
@@ -508,7 +508,7 @@ class DatabaseMetadataCache:
     async def reload(
         self,
     ) -> Result[CachedValue[DatabaseMetadata], MetadataExchangeDenoKvError]:
-        result = await self.get_database_metadata()
+        result = await self.authenticator()
         if isinstance(result, Err):
             return result
         return Ok(_cached_database_metadata(result.value))
@@ -569,7 +569,7 @@ class Kv:
         flags: KvFlags | None = None,
     ) -> None:
         self.session = session
-        self.metadata_cache = DatabaseMetadataCache(get_database_metadata=auth)
+        self.metadata_cache = DatabaseMetadataCache(authenticator=auth)
         self.retry_delays = ExponentialBackoff() if retry is None else retry
         self.v8_decoder = v8_decoder or Decoder()
         self.flags = KvFlags.IntAsNumber if flags is None else flags

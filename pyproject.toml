@@ -8,13 +8,18 @@ readme = "README.md"
 packages = [{ include = "denokv", from = "src" }]
 
 [tool.poetry.dependencies]
-python = "^3.9"
-typing-extensions = "^4.12.2"
-aiohttp = "^3.10.0"
-yarl = "^1.9.4"
+# Python 3.9 will be supported, but this requires some work to backport things
+# and test.
+python = "^3.12"
+aiohttp = "^3"
+yarl = "^1"
+# TODO: rebuild with older protoc so that we can relax this version
 protobuf = "^5.27.3"
-foundationdb = "^7.3.47"
-v8serialize = "^0.1.0a1"
+# We only use fdb.tuple from foundationdb, and the most-recent significant
+# change was in 6.2.4 (which is late 2019)
+# https://github.com/apple/foundationdb/commits/main/bindings/python/fdb/tuple.py
+foundationdb = "^6.2.4"
+v8serialize = "^0.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"
@@ -24,6 +29,7 @@ mypy = "^1.11.1"
 pytest-asyncio = "^0.23.8"
 pytest-aiohttp = "^1.0.5"
 types-protobuf = "^5.27.0.20240920"
+typing-extensions = "^4.12.2"
 
 [tool.poetry.group.dev-extra.dependencies]
 jupyterlab = "^4.2.5"

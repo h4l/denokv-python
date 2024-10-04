@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
 from itertools import groupby
+from typing import Any
 from typing import ClassVar
 from typing import Iterable
 from typing import Mapping
 from typing import NamedTuple
 from typing import Sequence
 from typing import TypeVar
+from typing import overload
 from uuid import UUID
 
 import v8serialize
@@ -42,6 +44,7 @@ from denokv.result import Result
 
 T = TypeVar("T")
 E = TypeVar("E")
+E2 = TypeVar("E2")
 
 v8_decoder = v8serialize.Decoder()
 
@@ -50,6 +53,24 @@ def assume_ok(result: Result[T, E]) -> T:
     if isinstance(result, Ok):
         return result.value
     raise AssertionError(f"result is not Ok: {result}")
+
+
+@overload
+def assume_err(result: Result[T, E]) -> E: ...
+
+
+@overload
+def assume_err(result: Result[T, Any], type: type[E]) -> E: ...
+
+
+def assume_err(result: Result[T, E], type: type[E2] | None = None) -> E | E2:
+    if not isinstance(result, Err):
+        raise AssertionError(f"result is not Err: {result}")
+    if type is None or isinstance(result.error, type):
+        return result.error
+    raise AssertionError(
+        f"result is an Err but its value is not instanceof {type.__name__}"
+    )
 
 
 def mk_db_meta(endpoints: Sequence[EndpointInfo]) -> DatabaseMetadata:

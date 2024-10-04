@@ -11,6 +11,14 @@ E = TypeVar("E")
 class Ok(Generic[T]):
     value: T
 
+    @property
+    def value_or_none(self) -> T:
+        return self.value
+
+    @property
+    def error_or_none(self) -> None:
+        return None
+
     def __repr__(self) -> str:
         return f"Ok({self.value!r})"
 
@@ -18,6 +26,14 @@ class Ok(Generic[T]):
 @dataclass(slots=True, frozen=True)
 class Err(Generic[T]):
     error: T
+
+    @property
+    def value_or_none(self) -> None:
+        return None
+
+    @property
+    def error_or_none(self) -> T:
+        return self.error
 
     def __repr__(self) -> str:
         return f"Err({self.error!r})"

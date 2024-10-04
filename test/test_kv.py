@@ -61,7 +61,7 @@ from denokv.kv import DatabaseMetadataCache
 from denokv.kv import EndpointSelector
 from denokv.kv import Kv
 from denokv.kv import KvEntry
-from denokv.kv import KVFlags
+from denokv.kv import KvFlags
 from denokv.kv import KvListOptions
 from denokv.kv import KvU64
 from denokv.kv import VersionStamp
@@ -373,8 +373,8 @@ def v8_decoder() -> Decoder:
 
 
 @pytest.fixture
-def kv_flags() -> KVFlags:
-    return KVFlags.NoFlag  # disable int -> float normalisation by default
+def kv_flags() -> KvFlags:
+    return KvFlags.NoFlag  # disable int -> float normalisation by default
 
 
 @pytest.fixture
@@ -383,7 +383,7 @@ def create_db(
     auth_fn: AuthenticatorFn,
     retry_delays: Backoff,
     v8_decoder: Decoder,
-    kv_flags: KVFlags,
+    kv_flags: KvFlags,
 ) -> partial[Kv]:
     return partial(
         Kv,
@@ -493,7 +493,7 @@ async def test_Kv_get__returns_n_values_for_n_keys(
 
 
 @pytest.mark.parametrize(
-    "kv_flags, int_type", [(KVFlags.IntAsNumber, float), (KVFlags.NoFlag, int)]
+    "kv_flags, int_type", [(KvFlags.IntAsNumber, float), (KvFlags.NoFlag, int)]
 )
 @pytest_mark_asyncio
 async def test_Kv_get__treats_int_as_float_when_IntAsNumber_enabled(
@@ -1000,10 +1000,10 @@ async def test_open_kv(
         "https://0.0.0.0/example",
         access_token="argsecret",
         session=client_session,
-        flags=KVFlags.NoFlag,
+        flags=KvFlags.NoFlag,
     )
     assert kv.session is client_session
-    assert kv.flags == KVFlags.NoFlag
+    assert kv.flags == KvFlags.NoFlag
     assert isinstance(kv.metadata_cache.get_database_metadata, Authenticator)
     credentials = kv.metadata_cache.get_database_metadata.credentials
     assert credentials.access_token == "argsecret"

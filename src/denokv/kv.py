@@ -521,7 +521,7 @@ class DatabaseMetadataCache:
             self.current = None
 
 
-class KVFlags(Flag):
+class KvFlags(Flag):
     """Options that can be enabled/disabled to affect [Kv](`denokv.kv.Kv`) behaviour."""
 
     NoFlag = 0
@@ -538,7 +538,7 @@ class KVFlags(Flag):
     """
 
 
-DEFAULT_KV_FLAGS: Final = KVFlags.IntAsNumber
+DEFAULT_KV_FLAGS: Final = KvFlags.IntAsNumber
 
 
 @dataclass(slots=True, init=False)
@@ -558,7 +558,7 @@ class Kv:
     retry_delays: Backoff
     metadata_cache: DatabaseMetadataCache
     v8_decoder: Decoder
-    flags: KVFlags
+    flags: KvFlags
 
     def __init__(
         self,
@@ -566,16 +566,16 @@ class Kv:
         auth: AuthenticatorFn,
         retry: Backoff | None = None,
         v8_decoder: Decoder | None = None,
-        flags: KVFlags | None = None,
+        flags: KvFlags | None = None,
     ) -> None:
         self.session = session
         self.metadata_cache = DatabaseMetadataCache(get_database_metadata=auth)
         self.retry_delays = ExponentialBackoff() if retry is None else retry
         self.v8_decoder = v8_decoder or Decoder()
-        self.flags = KVFlags.IntAsNumber if flags is None else flags
+        self.flags = KvFlags.IntAsNumber if flags is None else flags
 
     def _prepare_key(self, key: AnyKvKeyT) -> AnyKvKeyT:
-        if self.flags & KVFlags.IntAsNumber and not isinstance(key, KvKeyEncodable):
+        if self.flags & KvFlags.IntAsNumber and not isinstance(key, KvKeyEncodable):
             return normalize_key(key, bigints=False)  # type: ignore[return-value,arg-type]
         return key
 
@@ -1022,7 +1022,7 @@ def open_kv(
     *,
     access_token: str | None = None,
     session: aiohttp.ClientSession | None = None,
-    flags: KVFlags | None = None,
+    flags: KvFlags | None = None,
 ) -> Kv:
     """
     Create a connection to a KV database.
@@ -1046,7 +1046,7 @@ def open_kv(
     Notes
     -----
     Although this not an async function, it must be run in the context of an
-    asyncio event loop if `session` is not provided, because creating a
+    asyncio event loop when `session` is not provided, because creating a
     aiohttp.ClientSession requires a loop.
     """
     if isinstance(target, str):

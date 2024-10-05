@@ -39,6 +39,7 @@ pytest-asyncio = "^0.23.8"
 pytest-aiohttp = "^1.0.5"
 types-protobuf = "^5.27.0.20240920"
 typing-extensions = "^4.12.2"
+hypothesis = "^6.112.2"
 
 [tool.poetry.group.dev-extra.dependencies]
 jupyterlab = "^4.2.5"

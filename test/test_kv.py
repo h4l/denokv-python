@@ -961,11 +961,11 @@ async def test_Kv_list__retries_retryable_snapshot_read_errors(
 
 def test_open_kv__requires_event_loop_to_default_session() -> None:
     with pytest.raises(RuntimeError, match=r"no running event loop"):
-        open_kv("http://0.0.0.0")
+        open_kv("http://0.0.0.0", access_token="example")
 
 
 def test_open_kv__validates_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DENO_KV_ACCESS_TOKEN")
+    monkeypatch.delenv("DENO_KV_ACCESS_TOKEN", raising=False)
 
     with pytest.raises(
         ValueError,

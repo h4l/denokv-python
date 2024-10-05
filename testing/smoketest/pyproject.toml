@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "smoketest"
+version = "0.1.0"
+description = "A package that depends on denokv with the oldest supported dependencies."
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"  # TODO: Python 3.9
+denokv = ">=0,<1"
+aiohttp = "^3"    # TODO: use older aiohttp when using py39
+
+# require the oldest versions supported by denokv
+# aiohttp = "3"             # too old for 3.12
+yarl = "1"
+protobuf = "5.27.3"
+foundationdb = "<6.3"
+
+[tool.poetry.scripts]
+denokv-python-smoketest = 'smoketest:main'
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

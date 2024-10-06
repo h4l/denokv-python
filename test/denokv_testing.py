@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import sys
 from base64 import b16decode
 from base64 import b16encode
 from dataclasses import dataclass
@@ -221,3 +223,15 @@ class ExampleCursorFormat(AnyCursorFormat):
 
 
 ExampleCursorFormat.INSTANCE = ExampleCursorFormat()
+
+if sys.version_info >= (3, 12):
+    nextafter = math.nextafter
+else:
+
+    def nextafter(x: float, y: float, *, steps: int = 1) -> float:
+        if steps < 0:
+            raise ValueError("steps must be a non-negative integer")
+        x = float(x)
+        for _ in range(steps):
+            x = math.nextafter(x, y)
+        return x

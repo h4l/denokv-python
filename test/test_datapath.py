@@ -388,7 +388,8 @@ def make_database_metadata_for_endpoint(
             "/violation_invalid_protobuf_body",
             lambda endpoint: ProtocolViolation(
                 "Server responded to Data Path request with invalid "
-                "SnapshotReadOutput: Error parsing message",
+                "SnapshotReadOutput: Error parsing message with type "
+                "'com.deno.kv.datapath.SnapshotReadOutput'",
                 data=b"\x00foo",
                 endpoint=endpoint,
             ),

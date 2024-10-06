@@ -22,8 +22,7 @@ classifiers = [
 python = "^3.12"
 aiohttp = "^3"
 yarl = "^1"
-# TODO: rebuild with older protoc so that we can relax this version
-protobuf = "^5.27.3"
+protobuf = ">=4.22.0,<6"
 # We only use fdb.tuple from foundationdb, and the most-recent significant
 # change was in 6.2.4 (which is late 2019)
 # https://github.com/apple/foundationdb/commits/main/bindings/python/fdb/tuple.py
@@ -37,7 +36,7 @@ isort = "^5.13.2"
 mypy = "^1.11.1"
 pytest-asyncio = "^0.23.8"
 pytest-aiohttp = "^1.0.5"
-types-protobuf = "^5.27.0.20240920"
+types-protobuf = ">=4.22,<4.23"
 typing-extensions = "^4.12.2"
 hypothesis = "^6.112.2"
 
@@ -65,6 +64,7 @@ mypy_path = "./stubs"
 module = "denokv._datapath_pb2"
 # Generated protocol buffers stubs don't specify generic type params
 disallow_any_generics = false
+ignore_errors = true
 
 [tool.ruff.lint.isort]
 force-single-line = true

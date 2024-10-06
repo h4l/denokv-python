@@ -341,7 +341,7 @@ async def snapshot_read(
     # Version 3 introduced the status field and it must be set to SR_SUCCESS
     if meta.version >= 3 and read_output.status != SnapshotReadStatus.SR_SUCCESS:
         try:
-            status_desc = SnapshotReadStatus.Name(read_output.status)
+            status_desc = SnapshotReadStatus.Name(read_output.status)  # type: ignore[attr-defined]
         except Exception:
             status_desc = str(read_output.status)
 

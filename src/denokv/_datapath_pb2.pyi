@@ -7,13 +7,13 @@ from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Map
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class SnapshotReadStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
-    __slots__ = ()
+    __slots__ = []
     SR_UNSPECIFIED: _ClassVar[SnapshotReadStatus]
     SR_SUCCESS: _ClassVar[SnapshotReadStatus]
     SR_READ_DISABLED: _ClassVar[SnapshotReadStatus]
 
 class MutationType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
-    __slots__ = ()
+    __slots__ = []
     M_UNSPECIFIED: _ClassVar[MutationType]
     M_SET: _ClassVar[MutationType]
     M_DELETE: _ClassVar[MutationType]
@@ -23,14 +23,14 @@ class MutationType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     M_SET_SUFFIX_VERSIONSTAMPED_KEY: _ClassVar[MutationType]
 
 class ValueEncoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
-    __slots__ = ()
+    __slots__ = []
     VE_UNSPECIFIED: _ClassVar[ValueEncoding]
     VE_V8: _ClassVar[ValueEncoding]
     VE_LE64: _ClassVar[ValueEncoding]
     VE_BYTES: _ClassVar[ValueEncoding]
 
 class AtomicWriteStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
-    __slots__ = ()
+    __slots__ = []
     AW_UNSPECIFIED: _ClassVar[AtomicWriteStatus]
     AW_SUCCESS: _ClassVar[AtomicWriteStatus]
     AW_CHECK_FAILURE: _ClassVar[AtomicWriteStatus]
@@ -55,13 +55,13 @@ AW_CHECK_FAILURE: AtomicWriteStatus
 AW_WRITE_DISABLED: AtomicWriteStatus
 
 class SnapshotRead(_message.Message):
-    __slots__ = ("ranges",)
+    __slots__ = ["ranges"]
     RANGES_FIELD_NUMBER: _ClassVar[int]
     ranges: _containers.RepeatedCompositeFieldContainer[ReadRange]
     def __init__(self, ranges: _Optional[_Iterable[_Union[ReadRange, _Mapping]]] = ...) -> None: ...
 
 class SnapshotReadOutput(_message.Message):
-    __slots__ = ("ranges", "read_disabled", "read_is_strongly_consistent", "status")
+    __slots__ = ["ranges", "read_disabled", "read_is_strongly_consistent", "status"]
     RANGES_FIELD_NUMBER: _ClassVar[int]
     READ_DISABLED_FIELD_NUMBER: _ClassVar[int]
     READ_IS_STRONGLY_CONSISTENT_FIELD_NUMBER: _ClassVar[int]
@@ -73,7 +73,7 @@ class SnapshotReadOutput(_message.Message):
     def __init__(self, ranges: _Optional[_Iterable[_Union[ReadRangeOutput, _Mapping]]] = ..., read_disabled: bool = ..., read_is_strongly_consistent: bool = ..., status: _Optional[_Union[SnapshotReadStatus, str]] = ...) -> None: ...
 
 class ReadRange(_message.Message):
-    __slots__ = ("start", "end", "limit", "reverse")
+    __slots__ = ["start", "end", "limit", "reverse"]
     START_FIELD_NUMBER: _ClassVar[int]
     END_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
@@ -85,13 +85,13 @@ class ReadRange(_message.Message):
     def __init__(self, start: _Optional[bytes] = ..., end: _Optional[bytes] = ..., limit: _Optional[int] = ..., reverse: bool = ...) -> None: ...
 
 class ReadRangeOutput(_message.Message):
-    __slots__ = ("values",)
+    __slots__ = ["values"]
     VALUES_FIELD_NUMBER: _ClassVar[int]
     values: _containers.RepeatedCompositeFieldContainer[KvEntry]
     def __init__(self, values: _Optional[_Iterable[_Union[KvEntry, _Mapping]]] = ...) -> None: ...
 
 class AtomicWrite(_message.Message):
-    __slots__ = ("checks", "mutations", "enqueues")
+    __slots__ = ["checks", "mutations", "enqueues"]
     CHECKS_FIELD_NUMBER: _ClassVar[int]
     MUTATIONS_FIELD_NUMBER: _ClassVar[int]
     ENQUEUES_FIELD_NUMBER: _ClassVar[int]
@@ -101,7 +101,7 @@ class AtomicWrite(_message.Message):
     def __init__(self, checks: _Optional[_Iterable[_Union[Check, _Mapping]]] = ..., mutations: _Optional[_Iterable[_Union[Mutation, _Mapping]]] = ..., enqueues: _Optional[_Iterable[_Union[Enqueue, _Mapping]]] = ...) -> None: ...
 
 class AtomicWriteOutput(_message.Message):
-    __slots__ = ("status", "versionstamp", "failed_checks")
+    __slots__ = ["status", "versionstamp", "failed_checks"]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     VERSIONSTAMP_FIELD_NUMBER: _ClassVar[int]
     FAILED_CHECKS_FIELD_NUMBER: _ClassVar[int]
@@ -111,7 +111,7 @@ class AtomicWriteOutput(_message.Message):
     def __init__(self, status: _Optional[_Union[AtomicWriteStatus, str]] = ..., versionstamp: _Optional[bytes] = ..., failed_checks: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class Check(_message.Message):
-    __slots__ = ("key", "versionstamp")
+    __slots__ = ["key", "versionstamp"]
     KEY_FIELD_NUMBER: _ClassVar[int]
     VERSIONSTAMP_FIELD_NUMBER: _ClassVar[int]
     key: bytes
@@ -119,7 +119,7 @@ class Check(_message.Message):
     def __init__(self, key: _Optional[bytes] = ..., versionstamp: _Optional[bytes] = ...) -> None: ...
 
 class Mutation(_message.Message):
-    __slots__ = ("key", "value", "mutation_type", "expire_at_ms", "sum_min", "sum_max", "sum_clamp")
+    __slots__ = ["key", "value", "mutation_type", "expire_at_ms", "sum_min", "sum_max", "sum_clamp"]
     KEY_FIELD_NUMBER: _ClassVar[int]
     VALUE_FIELD_NUMBER: _ClassVar[int]
     MUTATION_TYPE_FIELD_NUMBER: _ClassVar[int]
@@ -137,7 +137,7 @@ class Mutation(_message.Message):
     def __init__(self, key: _Optional[bytes] = ..., value: _Optional[_Union[KvValue, _Mapping]] = ..., mutation_type: _Optional[_Union[MutationType, str]] = ..., expire_at_ms: _Optional[int] = ..., sum_min: _Optional[bytes] = ..., sum_max: _Optional[bytes] = ..., sum_clamp: bool = ...) -> None: ...
 
 class KvValue(_message.Message):
-    __slots__ = ("data", "encoding")
+    __slots__ = ["data", "encoding"]
     DATA_FIELD_NUMBER: _ClassVar[int]
     ENCODING_FIELD_NUMBER: _ClassVar[int]
     data: bytes
@@ -145,7 +145,7 @@ class KvValue(_message.Message):
     def __init__(self, data: _Optional[bytes] = ..., encoding: _Optional[_Union[ValueEncoding, str]] = ...) -> None: ...
 
 class KvEntry(_message.Message):
-    __slots__ = ("key", "value", "encoding", "versionstamp")
+    __slots__ = ["key", "value", "encoding", "versionstamp"]
     KEY_FIELD_NUMBER: _ClassVar[int]
     VALUE_FIELD_NUMBER: _ClassVar[int]
     ENCODING_FIELD_NUMBER: _ClassVar[int]
@@ -157,7 +157,7 @@ class KvEntry(_message.Message):
     def __init__(self, key: _Optional[bytes] = ..., value: _Optional[bytes] = ..., encoding: _Optional[_Union[ValueEncoding, str]] = ..., versionstamp: _Optional[bytes] = ...) -> None: ...
 
 class Enqueue(_message.Message):
-    __slots__ = ("payload", "deadline_ms", "keys_if_undelivered", "backoff_schedule")
+    __slots__ = ["payload", "deadline_ms", "keys_if_undelivered", "backoff_schedule"]
     PAYLOAD_FIELD_NUMBER: _ClassVar[int]
     DEADLINE_MS_FIELD_NUMBER: _ClassVar[int]
     KEYS_IF_UNDELIVERED_FIELD_NUMBER: _ClassVar[int]
@@ -169,13 +169,13 @@ class Enqueue(_message.Message):
     def __init__(self, payload: _Optional[bytes] = ..., deadline_ms: _Optional[int] = ..., keys_if_undelivered: _Optional[_Iterable[bytes]] = ..., backoff_schedule: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class Watch(_message.Message):
-    __slots__ = ("keys",)
+    __slots__ = ["keys"]
     KEYS_FIELD_NUMBER: _ClassVar[int]
     keys: _containers.RepeatedCompositeFieldContainer[WatchKey]
     def __init__(self, keys: _Optional[_Iterable[_Union[WatchKey, _Mapping]]] = ...) -> None: ...
 
 class WatchOutput(_message.Message):
-    __slots__ = ("status", "keys")
+    __slots__ = ["status", "keys"]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     KEYS_FIELD_NUMBER: _ClassVar[int]
     status: SnapshotReadStatus
@@ -183,13 +183,13 @@ class WatchOutput(_message.Message):
     def __init__(self, status: _Optional[_Union[SnapshotReadStatus, str]] = ..., keys: _Optional[_Iterable[_Union[WatchKeyOutput, _Mapping]]] = ...) -> None: ...
 
 class WatchKey(_message.Message):
-    __slots__ = ("key",)
+    __slots__ = ["key"]
     KEY_FIELD_NUMBER: _ClassVar[int]
     key: bytes
     def __init__(self, key: _Optional[bytes] = ...) -> None: ...
 
 class WatchKeyOutput(_message.Message):
-    __slots__ = ("changed", "entry_if_changed")
+    __slots__ = ["changed", "entry_if_changed"]
     CHANGED_FIELD_NUMBER: _ClassVar[int]
     ENTRY_IF_CHANGED_FIELD_NUMBER: _ClassVar[int]
     changed: bool

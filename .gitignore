@@ -6,4 +6,5 @@
 !.git*
 !.prettierrc
 __pycache__
+build
 dist

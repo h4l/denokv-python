@@ -15,13 +15,6 @@ function "get_py_image_tag" {
   )
 }
 
-// Build the denokv image with the local platform. The published image is only
-// amd64.
-target "denokv" {
-  context = "https://github.com/denoland/denokv.git"
-  tags = ["denokv"]
-}
-
 py_versions = ["3.12", "3.13-rc"]
 // TODO: support these versions
 // py_versions = ["3.9", "3.10", "3.11", "3.12", "3.13-rc"]

@@ -17,9 +17,7 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-# Python 3.9 will be supported, but this requires some work to backport things
-# and test.
-python = "^3.12"
+python = "^3.9"
 aiohttp = "^3"
 yarl = "^1"
 protobuf = ">=4.22.0,<6"

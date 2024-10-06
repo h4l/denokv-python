@@ -114,6 +114,7 @@ files = [
 [package.dependencies]
 aiohappyeyeballs = ">=2.3.0"
 aiosignal = ">=1.1.2"
+async-timeout = {version = ">=4.0,<5.0", markers = "python_version < \"3.11\""}
 attrs = ">=17.3.0"
 frozenlist = ">=1.1.1"
 multidict = ">=4.5,<7.0"
@@ -135,6 +136,17 @@ files = [
 
 [package.dependencies]
 frozenlist = ">=1.1.0"
+
+[[package]]
+name = "async-timeout"
+version = "4.0.3"
+description = "Timeout context manager for asyncio programs"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "async-timeout-4.0.3.tar.gz", hash = "sha256:4640d96be84d82d02ed59ea2b7105a0f7b33abe8703703cd0ab0bf87c427522f"},
+    {file = "async_timeout-4.0.3-py3-none-any.whl", hash = "sha256:7405140ff1230c310e51dc27b3145b9092d659ce68ff733fb0cefe3ee42be028"},
+]
 
 [[package]]
 name = "attrs"
@@ -162,7 +174,7 @@ description = "Connect to Deno KV databases from Python."
 optional = false
 python-versions = "*"
 files = []
-develop = true
+develop = false
 
 [package.source]
 type = "directory"
@@ -379,6 +391,9 @@ files = [
     {file = "multidict-6.1.0.tar.gz", hash = "sha256:22ae2ebf9b0c69d206c003e2f6a914ea33f0a932d4aa16f236afc049d9958f4a"},
 ]
 
+[package.dependencies]
+typing-extensions = {version = ">=4.1.0", markers = "python_version < \"3.11\""}
+
 [[package]]
 name = "protobuf"
 version = "4.22.5"
@@ -399,6 +414,17 @@ files = [
     {file = "protobuf-4.22.5-cp39-cp39-win_amd64.whl", hash = "sha256:3e024197f8c2598b59715aa7a136b22a186323e2d843cdfe0d9fa05fe4dbf5e0"},
     {file = "protobuf-4.22.5-py3-none-any.whl", hash = "sha256:1c7e8e692567c4ace67146cea8f5c5694aec0ac8861b03e4d30d3d8e7e9ea283"},
     {file = "protobuf-4.22.5.tar.gz", hash = "sha256:cf858f99cbcd502efc9848587d5961178e94e498de604e14c7b669d51793dadf"},
+]
+
+[[package]]
+name = "typing-extensions"
+version = "4.12.2"
+description = "Backported and Experimental Type Hints for Python 3.8+"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "typing_extensions-4.12.2-py3-none-any.whl", hash = "sha256:04e5ca0351e0f3f85c6853954072df659d0d13fac324d0072316b67d7794700d"},
+    {file = "typing_extensions-4.12.2.tar.gz", hash = "sha256:1a7ead55c7e559dd4dee8856e3a88b41225abfe1ce8df57b7c13915fe121ffb8"},
 ]
 
 [[package]]
@@ -429,5 +455,5 @@ multidict = ">=4.0"
 
 [metadata]
 lock-version = "2.0"
-python-versions = "^3.12"
-content-hash = "ef6d68568cea607853054366c5587185529f83407254971642a69b1962805b54"
+python-versions = "^3.9"
+content-hash = "1456f7aa5bae3fc04772294098f7cc9e54ff7487c66cc0edc785745bc3a03cf3"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import functools
-import math
 import re
 import struct
 from datetime import datetime
@@ -59,6 +58,7 @@ from denokv.result import Err
 from denokv.result import Ok
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
+from test.denokv_testing import nextafter
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 
 pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
@@ -924,10 +924,10 @@ def example_entries_spaced_keys() -> Mapping[KvKeyTuple, object]:
         ("string", "\u0080"): b"string_min2b",  # min 2-byte UTF-8 codepoint
         ("string", "\u07ff"): b"string_max2b",  # max 2-byte UTF-8 codepoint
         ("string", "\u0800"): b"string_min3b",  # min 3-byte UTF-8 codepoint
-        ("number", math.nextafter(1.0, 2.0, steps=0)): b"number1.0",
-        ("number", math.nextafter(1.0, 2.0, steps=1)): b"number1.0next1",
-        ("number", math.nextafter(1.0, 2.0, steps=3)): b"number1.0next3",
-        ("number", math.nextafter(1.0, 2.0, steps=5)): b"number1.0next5",
+        ("number", nextafter(1.0, 2.0, steps=0)): b"number1.0",
+        ("number", nextafter(1.0, 2.0, steps=1)): b"number1.0next1",
+        ("number", nextafter(1.0, 2.0, steps=3)): b"number1.0next3",
+        ("number", nextafter(1.0, 2.0, steps=5)): b"number1.0next5",
         ("bool", False): b"false",
         ("bool", True): b"true",
     }
@@ -968,14 +968,14 @@ def example_entries_spaced_keys() -> Mapping[KvKeyTuple, object]:
         (("string", "\u07ff"), b"string_max2b"),
         (("string", "\u0800"), b"string_min3b"),
         (("string", "\u0801"), None),
-        (("number", math.nextafter(1.0, 0.0, steps=1)), None),
+        (("number", nextafter(1.0, 0.0, steps=1)), None),
         (("number", 1.0), b"number1.0"),
-        (("number", math.nextafter(1.0, 2.0, steps=1)), b"number1.0next1"),
-        (("number", math.nextafter(1.0, 2.0, steps=2)), None),
-        (("number", math.nextafter(1.0, 2.0, steps=3)), b"number1.0next3"),
-        (("number", math.nextafter(1.0, 2.0, steps=4)), None),
-        (("number", math.nextafter(1.0, 2.0, steps=5)), b"number1.0next5"),
-        (("number", math.nextafter(1.0, 2.0, steps=6)), None),
+        (("number", nextafter(1.0, 2.0, steps=1)), b"number1.0next1"),
+        (("number", nextafter(1.0, 2.0, steps=2)), None),
+        (("number", nextafter(1.0, 2.0, steps=3)), b"number1.0next3"),
+        (("number", nextafter(1.0, 2.0, steps=4)), None),
+        (("number", nextafter(1.0, 2.0, steps=5)), b"number1.0next5"),
+        (("number", nextafter(1.0, 2.0, steps=6)), None),
         (("bool", False), b"false"),
         (("bool", True), b"true"),
     ],

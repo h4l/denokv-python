@@ -1,9 +1,9 @@
 import ctypes
 from typing import Hashable
-from typing import TypeAlias
 from uuid import UUID
 
 from _typeshed import SupportsAllComparisons
+from typing_extensions import TypeAlias
 
 def pack(t: tuple[KeyPiece, ...]) -> bytes: ...
 def unpack(b: bytes) -> tuple[KeyPiece, ...]: ...

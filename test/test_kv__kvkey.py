@@ -6,6 +6,7 @@ from typing import Sequence
 
 import pytest
 from fdb.tuple import pack
+from typing_extensions import Unpack
 
 from denokv.datapath import AnyKvKey
 from denokv.datapath import KvKeyEncodable
@@ -69,7 +70,7 @@ def test_unknown_pieces() -> None:
     def get_pieces() -> Sequence[KvKeyPiece]:
         return ["foo", b"bar", 1, 2.0, True]
 
-    key: KvKey[*tuple[KvKeyPiece, ...]] = KvKey(*get_pieces())
+    key: KvKey[Unpack[tuple[KvKeyPiece, ...]]] = KvKey(*get_pieces())
     key2: KvKey = KvKey(*get_pieces())
 
     def use_key(key: AnyKvKey) -> None:

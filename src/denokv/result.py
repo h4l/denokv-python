@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from typing import Generic
-from typing import TypeAlias
 from typing import TypeVar
+
+if TYPE_CHECKING:
+    from typing_extensions import TypeAlias
 
 T = TypeVar("T")
 E = TypeVar("E")
@@ -39,7 +44,7 @@ class Err(Generic[T]):
         return f"Err({self.error!r})"
 
 
-Result: TypeAlias = Ok[T] | Err[E]
+Result: TypeAlias = "Ok[T] | Err[E]"
 
 
 # Better to use isinstance because mypy doesn't exclude the TypeGuard from the

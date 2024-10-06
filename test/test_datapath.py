@@ -875,7 +875,7 @@ def test_pack_key_range(
         end_tuple = (
             end
             if end is not None
-            else tuple[KvKeyPiece | Infinity, ...]((*(prefix or ()), Infinity()))
+            else tuple["KvKeyPiece | Infinity", ...]((*(prefix or ()), Infinity()))
         )
         end_satisfied = (key < end_tuple) if exclude_end else (key <= end_tuple)
 

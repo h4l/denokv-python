@@ -18,9 +18,7 @@ from typing import Final
 from typing import Generic
 from typing import Iterable
 from typing import Protocol
-from typing import Self
 from typing import Sequence
-from typing import TypeAlias
 from typing import TypedDict
 from typing import overload
 
@@ -65,6 +63,8 @@ from denokv.result import Ok
 from denokv.result import Result
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
+    from typing_extensions import TypeAlias
     from typing_extensions import TypeVar
     from typing_extensions import TypeVarTuple
     from typing_extensions import Unpack
@@ -75,10 +75,10 @@ if TYPE_CHECKING:
     Pieces = TypeVarTuple("Pieces", default=Unpack[tuple[KvKeyPiece, ...]])
 else:
     from typing import TypeVar
-    from typing import TypeVarTuple
 
     T = TypeVar("T")
-    Pieces = TypeVarTuple("Pieces")
+    Unpack = tuple  # hack to support py39 at runtime w/o typing_extensions
+    Pieces = TypeVar("Pieces")  # hack to support py39 at runtime w/o typing_extensions
 
 SAFE_FLOAT_INT_RANGE: Final = range(-(2**53 - 1), 2**53)  # 2**53 - 1 is max safe
 
@@ -237,7 +237,7 @@ class KvU64:
         return f"{type(self).__name__}({self.value})"
 
 
-class KvKey(KvKeyEncodable, tuple[*Pieces], Generic[*Pieces]):
+class KvKey(KvKeyEncodable, tuple[Unpack[Pieces]]):
     """
     A key identifying a value in a Deno KV database.
 
@@ -253,7 +253,7 @@ class KvKey(KvKeyEncodable, tuple[*Pieces], Generic[*Pieces]):
 
     # The Pieces TypeVarTuple cannot be bounded to KvKeyPiece elements, so this
     # type can hold any element, but  only KvKeyPiece can exist at runtime.
-    def __new__(cls, *pieces: *Pieces) -> KvKey[*Pieces]:
+    def __new__(cls, *pieces: Unpack[Pieces]) -> KvKey[Unpack[Pieces]]:
         if not is_kv_key_tuple(pieces):
             raise TypeError(
                 f"key contains types other than "
@@ -283,8 +283,8 @@ class KvKey(KvKeyEncodable, tuple[*Pieces], Generic[*Pieces]):
         to float for JS compatibility.
         """
         if isinstance(key, KvKeyEncodable):
-            return key  # type: ignore[return-value]
-        return cls(*key)  # type: ignore[arg-type,return-value]
+            return key  # type: ignore[return-value,unused-ignore]
+        return cls(*key)  # type: ignore[arg-type,return-value,unused-ignore]
 
     def kv_key_bytes(self) -> bytes:
         return pack(self)  # type: ignore[arg-type]
@@ -295,7 +295,7 @@ class KvKey(KvKeyEncodable, tuple[*Pieces], Generic[*Pieces]):
         try:
             # If packed key contains types other than allowed by KvKeyPiece
             # then the constructor throws TypeError, so this is type-safe.
-            return cls(*unpack(packed_key))  # type: ignore[arg-type,return-value]
+            return cls(*unpack(packed_key))  # type: ignore[arg-type,return-value,unused-ignore]
         except ValueError as e:
             raise ValueError(
                 f"Cannot create {cls.__name__} from packed key: {packed_key!r}:"
@@ -310,7 +310,7 @@ class KvKey(KvKeyEncodable, tuple[*Pieces], Generic[*Pieces]):
 # Ideally the default parameter of the Pieces KvKeyTuple would make this the
 # default for KvKey (with no generic type), but mypy thinks it is
 # KvKey[*tuple[Any, ...]] when used without generic type args.
-DefaultKvKey: TypeAlias = KvKey[*tuple[KvKeyPiece, ...]]
+DefaultKvKey: TypeAlias = "KvKey[Unpack[tuple[KvKeyPiece, ...]]]"
 """KvKey containing any number of key values of any allowed type."""
 
 
@@ -357,8 +357,8 @@ class CachedValue(Generic[T]):
         return time < self.fresh_until
 
 
-AuthenticatorFn = Callable[
-    [], Awaitable[Result[DatabaseMetadata, MetadataExchangeDenoKvError]]
+AuthenticatorFn: TypeAlias = Callable[
+    [], Awaitable["Result[DatabaseMetadata, MetadataExchangeDenoKvError]"]
 ]
 """
 The type of a function that connects to a KV database and returns metadata.
@@ -878,7 +878,9 @@ class Kv:
         return Ok((result.value, endpoint))
 
 
-_KvSnapshotReadResult = Result[tuple[SnapshotReadOutput, EndpointInfo], DataPathError]
+_KvSnapshotReadResult: TypeAlias = (
+    "Result[tuple[SnapshotReadOutput, EndpointInfo], DataPathError]"
+)
 
 
 @dataclass(frozen=True)

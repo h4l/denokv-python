@@ -14,7 +14,6 @@ from typing import Awaitable
 from typing import Callable
 from typing import Final
 from typing import Protocol
-from typing import TypeAlias
 from typing import runtime_checkable
 
 import aiohttp
@@ -42,10 +41,11 @@ KV_KEY_PIECE_TYPES: Final = (str, bytes, int, float, bool)
 
 
 if TYPE_CHECKING:
+    from typing_extensions import TypeAlias
     from typing_extensions import TypeGuard
     from typing_extensions import TypeVar
 
-    KvKeyPiece: TypeAlias = str | bytes | int | float | bool
+    KvKeyPiece: TypeAlias = "str | bytes | int | float | bool"
     KvKeyPieceT = TypeVar("KvKeyPieceT", bound=KvKeyPiece, default=KvKeyPiece)
 
     KvKeyTuple: TypeAlias = tuple[KvKeyPieceT, ...]
@@ -59,7 +59,7 @@ if TYPE_CHECKING:
         def kv_key_bytes(self) -> bytes: ...
 
     KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
-    AnyKvKey: TypeAlias = KvKeyEncodable | KvKeyTuple
+    AnyKvKey: TypeAlias = "KvKeyEncodable | KvKeyTuple"
     AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey, default=AnyKvKey)
     AnyKvKeyT_con = TypeVar(
         "AnyKvKeyT_con", bound=AnyKvKey, default=AnyKvKey, contravariant=True
@@ -67,7 +67,7 @@ if TYPE_CHECKING:
 else:
     from typing import TypeVar
 
-    KvKeyPiece: TypeAlias = str | bytes | int | float | bool
+    KvKeyPiece: TypeAlias = "str | bytes | int | float | bool"
     KvKeyPieceT = TypeVar("KvKeyPieceT", bound=KvKeyPiece)
 
     KvKeyTuple: TypeAlias = tuple[KvKeyPieceT, ...]
@@ -79,7 +79,7 @@ else:
         def kv_key_bytes(self) -> bytes: ...
 
     KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
-    AnyKvKey: TypeAlias = KvKeyEncodable | KvKeyTuple
+    AnyKvKey: TypeAlias = "KvKeyEncodable | KvKeyTuple"
     AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey)
     AnyKvKeyT_con = TypeVar("AnyKvKeyT_con", bound=AnyKvKey, contravariant=True)
 
@@ -182,8 +182,8 @@ class RequestUnsuccessful(DataPathDenoKvError):
     pass
 
 
-DataPathError = (
-    EndpointNotUsable | RequestUnsuccessful | ResponseUnsuccessful | ProtocolViolation
+DataPathError: TypeAlias = (
+    "EndpointNotUsable | RequestUnsuccessful | ResponseUnsuccessful | ProtocolViolation"
 )
 
 
@@ -286,7 +286,7 @@ async def _response_body_bytes(response: aiohttp.ClientResponse) -> Ok[bytes]:
         return Ok(await response.read())
 
 
-SnapshotReadResult = Result[SnapshotReadOutput, DataPathError]
+SnapshotReadResult: TypeAlias = "Result[SnapshotReadOutput, DataPathError]"
 
 
 async def snapshot_read(

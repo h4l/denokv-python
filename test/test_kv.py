@@ -244,7 +244,7 @@ async def test_DatabaseMetadataCache__reloads_meta_from_fn(
 
 
 GetDbMetaFuture: TypeAlias = asyncio.Future[
-    Result[DatabaseMetadata, MetadataExchangeDenoKvError]
+    "Result[DatabaseMetadata, MetadataExchangeDenoKvError]"
 ]
 
 

@@ -32,6 +32,7 @@ from denokv import datapath
 from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
+from denokv._pycompat.dataclasses import slots_if310
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
@@ -96,7 +97,7 @@ class KvListOptions(TypedDict, total=False):
     cursor_format_type: CursorFormatType | None
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class KvEntry(Generic[AnyKvKeyT, T]):
     """A value read from the Deno KV database, along with its key and version."""
 
@@ -105,7 +106,7 @@ class KvEntry(Generic[AnyKvKeyT, T]):
     versionstamp: VersionStamp
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class ListKvEntry(KvEntry[AnyKvKeyT, T]):
     """
     A value read from the Deno KV database with a list operation.
@@ -179,7 +180,7 @@ class VersionStamp(bytes):
         return f"{type(self).__name__}({str(self)!r})"
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class KvU64:
     """
     An special int value that supports operations like `sum`, `max`, and `min`.
@@ -314,12 +315,11 @@ DefaultKvKey: TypeAlias = "KvKey[Unpack[tuple[KvKeyPiece, ...]]]"
 """KvKey containing any number of key values of any allowed type."""
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class EndpointSelector:
     # Right now this is very simple, which is fine for the local SQLite-backed
     # Deno KV server, but for distributed Deno KV we need to support selecting
     # endpoints based on latency, so this can be stateful.
-
     meta: DatabaseMetadata
 
     def __post_init__(self) -> None:
@@ -348,7 +348,7 @@ class EndpointSelector:
         return candidates[0]
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class CachedValue(Generic[T]):
     fresh_until: float
     value: T
@@ -368,7 +368,7 @@ database.
 """
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **slots_if310())
 class KvCredentials:
     server_url: URL
     access_token: str
@@ -541,7 +541,7 @@ class KvFlags(Flag):
 DEFAULT_KV_FLAGS: Final = KvFlags.IntAsNumber
 
 
-@dataclass(slots=True, init=False)
+@dataclass(init=False, **slots_if310())
 class Kv:
     """
     Interface to perform requests against a Deno KV database.

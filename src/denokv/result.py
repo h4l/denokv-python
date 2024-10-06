@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 from typing import Generic
 from typing import TypeVar
 
+from denokv._pycompat.dataclasses import slots_if310
+
 if TYPE_CHECKING:
     from typing_extensions import TypeAlias
 
@@ -12,7 +14,7 @@ T = TypeVar("T")
 E = TypeVar("E")
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class Ok(Generic[T]):
     value: T
 
@@ -28,7 +30,7 @@ class Ok(Generic[T]):
         return f"Ok({self.value!r})"
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class Err(Generic[T]):
     error: T
 

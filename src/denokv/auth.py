@@ -12,6 +12,7 @@ import aiohttp
 import aiohttp.client_exceptions
 from yarl import URL
 
+from denokv._pycompat.dataclasses import slots_if310
 from denokv.errors import DenoKvError
 from denokv.errors import DenoKvValidationError
 from denokv.result import Err
@@ -19,7 +20,7 @@ from denokv.result import Ok
 from denokv.result import Result
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class DatabaseMetadata:
     """
     MetadataExchangeResponse.
@@ -57,7 +58,7 @@ class ConsistencyLevel(StrEnum):
     EVENTUAL = "eventual"
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class EndpointInfo:
     url: URL
     consistency: ConsistencyLevel

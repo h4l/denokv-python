@@ -173,6 +173,9 @@ class VersionStamp(bytes):
     def __index__(self) -> int:
         return int.from_bytes(self, byteorder="big")
 
+    def __bytes__(self) -> bytes:
+        return self[:]
+
     def __str__(self) -> str:
         return self.hex()
 

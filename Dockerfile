@@ -75,9 +75,9 @@ COPY --from=denokv-bin /denokv /usr/local/bin/denokv
 RUN python -m venv /env
 ENV PATH=/env/bin:$PATH
 RUN --mount=from=smoketest-pkg,target=/pkg/smoketest \
-    --mount=from=denokv-pkg,target=/pkg/v8serialize \
+    --mount=from=denokv-pkg,target=/pkg/denokv \
     --mount=type=cache,target=/root/.cache \
-  pip install /pkg/smoketest/*.whl /pkg/v8serialize/*.whl
+  pip install /pkg/smoketest/*.whl /pkg/denokv/*.whl
 
 
 FROM test-package-install AS test-package

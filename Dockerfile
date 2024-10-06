@@ -48,6 +48,20 @@ RUN --mount=source=.,target=/workspace,rw \
     mypy src stubs test
 
 
+FROM lint-setup AS lint-protobuf
+ARG PROTOC_VERSION
+RUN --mount=source=.,target=/workspace,rw \
+    --mount=from=generated-protobuf,target=build/protobuf_${PROTOC_VERSION} \
+<<EOF
+if ! diff -u build/protobuf_${PROTOC_VERSION}/datapath_pb2.py  src/denokv/_datapath_pb2.py ||
+   ! diff -u build/protobuf_${PROTOC_VERSION}/datapath_pb2.pyi src/denokv/_datapath_pb2.pyi
+then
+  printf "\nError: Generated protobuf files do not match repo files\n" >&2;
+  exit 1;
+fi
+EOF
+
+
 FROM poetry AS smoketest-pkg-build
 RUN --mount=source=testing/smoketest,target=.,rw \
   mkdir /dist && poetry build -o /dist
@@ -83,3 +97,32 @@ RUN --mount=from=smoketest-pkg,target=/pkg/smoketest \
 FROM test-package-install AS test-package
 RUN pip list
 RUN denokv-python-smoketest
+
+
+FROM scratch AS protoc-zip-arm64
+ARG PROTOC_VERSION
+ADD "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-aarch_64.zip" /
+
+FROM scratch AS protoc-zip-amd64
+ARG PROTOC_VERSION
+ADD "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" /
+
+FROM protoc-zip-${TARGETARCH} AS protoc-zip
+
+
+FROM python-base AS protoc
+RUN apt-get update && apt-get install -y --no-install-recommends unzip
+RUN --mount=from=protoc-zip,source=/,dst=/protoc-zip \
+  unzip /protoc-zip/protoc-*.zip bin/protoc -d /usr/local
+WORKDIR /build
+COPY --from=denokv-repo proto/schema proto/schema
+
+
+FROM protoc AS build-datapath-protobuf-python
+RUN protoc --version
+RUN mkdir -p out
+RUN protoc --proto_path=proto/schema --python_out=out --pyi_out=out datapath.proto
+
+
+FROM scratch AS datapath-protobuf-python
+COPY --from=build-datapath-protobuf-python /build/out/* .

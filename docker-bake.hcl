@@ -1,5 +1,11 @@
+PROTOC_VERSION = "22.0"
+
 group "default" {
-    targets = ["test", "test_package", "lint"]
+    targets = ["test", "test_package", "lint-all"]
+}
+
+group "lint-all" {
+    targets = ["lint", "lint-protobuf"]
 }
 
 function "get_py_image_tag" {
@@ -45,15 +51,44 @@ target "test_package" {
     output = ["type=cacheonly"]
 }
 
+target "_lint" {
+    args = {
+        PYTHON_VER = get_py_image_tag("latest")
+    }
+    no-cache-filter = ["lint-setup"]
+    output = ["type=cacheonly"]
+}
+
 target "lint" {
+    inherits = ["_lint"]
     name = "lint-${lint_type}"
     matrix = {
         lint_type = ["check", "format", "mypy"],
     }
+    target = "lint-${lint_type}"
+}
+
+target "lint-protobuf" {
+    inherits = ["_lint"]
+    args = {
+        PROTOC_VERSION = PROTOC_VERSION
+    }
+    contexts = {
+        generated-protobuf = "target:protobuf"
+    }
+    target = "lint-protobuf"
+}
+
+target "protobuf" {
     args = {
         PYTHON_VER = get_py_image_tag("latest")
+        PROTOC_VERSION = PROTOC_VERSION
     }
-    target = "lint-${lint_type}"
-    no-cache-filter = ["lint-setup"]
-    output = ["type=cacheonly"]
+    contexts = {
+        // https://github.com/denoland/denokv/commits/main/proto/schema/datapath.proto
+        denokv-repo = "https://github.com/denoland/denokv.git#e6a50cfe7ea5e66b9bf68da3a0731c72122ff17f" # Dec 21, 2023
+    }
+    target = "datapath-protobuf-python"
+    no-cache-filter = ["build-datapath-protobuf-python"]
+    output = ["type=local,dest=build/protobuf_${PROTOC_VERSION}"]
 }

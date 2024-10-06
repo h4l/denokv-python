@@ -21,9 +21,7 @@ function "get_py_image_tag" {
   )
 }
 
-py_versions = ["3.12", "3.13-rc"]
-// TODO: support these versions
-// py_versions = ["3.9", "3.10", "3.11", "3.12", "3.13-rc"]
+py_versions = ["3.9", "3.10", "3.11", "3.12", "3.13-rc"]
 
 target "test" {
     name = "test_py${replace(py, ".", "")}"

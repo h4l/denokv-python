@@ -51,12 +51,13 @@ async def smoketest(db_path: Path) -> None:
     )
 
     try:
-        async with asyncio.timeout(4):
-            await asyncio.wait(
-                [server_exit, communicate],
-                return_when=asyncio.FIRST_COMPLETED,
-                timeout=4,
-            )
+        done, pending = await asyncio.wait(
+            [server_exit, communicate],
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=4,
+        )
+        if not done:
+            raise TimeoutError("Timed out while communicating with denokv server")
     finally:
         server_exit.cancel()
         communicate.cancel()

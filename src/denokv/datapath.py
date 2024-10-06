@@ -202,7 +202,7 @@ async def _datapath_request(
     request_body: bytes,
     handle_response: Callable[[aiohttp.ClientResponse], Awaitable[_T]],
 ) -> _T | Err[DataPathError]:
-    url = endpoint.url.joinpath(kind.value)
+    url = endpoint.url / kind.value
     try:
         db_id_header = (
             "x-transaction-domain-id" if meta.version == 1 else "x-denokv-database-id"

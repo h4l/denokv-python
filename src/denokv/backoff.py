@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import itertools
-import random
-import time
+import random as random_
+import time as time_
 from dataclasses import dataclass
-from dataclasses import field
 from enum import IntEnum
 from itertools import count
 from typing import Callable
@@ -23,7 +22,7 @@ keep producing delays indefinitely.
 """
 
 
-@dataclass(kw_only=True)
+@dataclass(init=False)
 class ExponentialBackoff(Iterable[float]):
     """
     A `Backoff` strategy that generates randomised, exponentially-increasing delays.
@@ -48,6 +47,7 @@ class ExponentialBackoff(Iterable[float]):
 
     Examples
     --------
+    >>> import random
     >>> random.seed(43)
     >>> backoff = ExponentialBackoff()
     >>> for i, delay in zip(range(1, 11), backoff):
@@ -88,22 +88,37 @@ class ExponentialBackoff(Iterable[float]):
     end — no more delays available (20.00 seconds elapsed)
     """
 
-    multiplier: float = field(default=1.5)
-    initial_interval_seconds: float = field(default=0.5)
-    max_interval_seconds: float = field(default=15 * 60)
-    max_elapsed_seconds: float = field(default=15 * 60 * 60)
-    random: Callable[[], float] = field(default=random.random)
-    time: Callable[[], float] = field(default=time.time)
+    multiplier: float
+    initial_interval_seconds: float
+    max_interval_seconds: float
+    max_elapsed_seconds: float
+    random: Callable[[], float]
+    time: Callable[[], float]
 
-    def __post_init__(self) -> None:
-        if self.multiplier < 1:
+    def __init__(
+        self,
+        multiplier: float = 1.5,
+        initial_interval_seconds: float = 0.5,
+        max_interval_seconds: float = 15 * 60,
+        max_elapsed_seconds: float = 15 * 60 * 60,
+        random: Callable[[], float] = random_.random,
+        time: Callable[[], float] = time_.time,
+    ) -> None:
+        if multiplier < 1:
             raise ValueError("multiplier must be >= 1")
-        if self.initial_interval_seconds <= 0:
+        if initial_interval_seconds <= 0:
             raise ValueError("initial_interval_seconds must be > 0")
-        if self.max_interval_seconds <= 0:
+        if max_interval_seconds <= 0:
             raise ValueError("max_interval_seconds must be > 0")
-        if self.max_elapsed_seconds < 0:
+        if max_elapsed_seconds < 0:
             raise ValueError("max_elapsed_seconds must be >= 0")
+
+        self.multiplier = multiplier
+        self.initial_interval_seconds = initial_interval_seconds
+        self.max_interval_seconds = max_interval_seconds
+        self.max_elapsed_seconds = max_elapsed_seconds
+        self.random = random
+        self.time = time
 
     def _next_jitter(self) -> float:
         sample = self.random()

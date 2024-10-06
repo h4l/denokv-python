@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from datetime import timedelta
-from enum import StrEnum
 from functools import partial
 from itertools import repeat
 from typing import TYPE_CHECKING
@@ -36,6 +35,7 @@ from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._datapath_pb2 import SnapshotReadStatus
 from denokv._datapath_pb2 import ValueEncoding
+from denokv._pycompat.enum import StrEnum
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata

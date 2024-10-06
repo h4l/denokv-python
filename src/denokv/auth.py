@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
 from typing import Mapping
 from typing import Sequence
 from typing import cast
@@ -13,6 +12,7 @@ import aiohttp.client_exceptions
 from yarl import URL
 
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.enum import StrEnum
 from denokv.errors import DenoKvError
 from denokv.errors import DenoKvValidationError
 from denokv.result import Err

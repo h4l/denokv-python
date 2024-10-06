@@ -253,8 +253,6 @@ class KvKey(KvKeyEncodable, tuple[Unpack[Pieces]]):
     [Kv]: `denokv.kv.Kv`
     """
 
-    # @overload
-
     # The Pieces TypeVarTuple cannot be bounded to KvKeyPiece elements, so this
     # type can hold any element, but  only KvKeyPiece can exist at runtime.
     def __new__(cls, *pieces: Unpack[Pieces]) -> KvKey[Unpack[Pieces]]:

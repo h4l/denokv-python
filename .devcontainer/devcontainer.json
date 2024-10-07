@@ -12,6 +12,7 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "charliermarsh.ruff",
         "ms-python.python",
         "ms-python.isort",
         "ms-python.black-formatter"

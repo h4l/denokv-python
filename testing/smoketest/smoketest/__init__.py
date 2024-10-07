@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from v8serialize.jstypes import JSObject
-from yarl import URL  # type: ignore[import-untyped]  # old version w/o types
+from yarl import URL
 
 import denokv
 
@@ -32,7 +32,15 @@ async def get_unused_port() -> int:
     async with await asyncio.get_running_loop().create_server(
         lambda: asyncio.Protocol(), host="localhost", port=0, family=socket.AF_INET
     ) as server:
-        return server.sockets[0].getsockname()[1]
+        try:
+            port = server.sockets[0].getsockname()[1]
+            if not isinstance(port, int):
+                raise TypeError("expected port to be an int")
+            return port
+        except Exception as e:
+            raise TypeError(
+                f"failed to retrieve IPv4 TCP port from asyncio server: {server!r}"
+            ) from e
 
 
 async def smoketest(db_path: Path) -> None:

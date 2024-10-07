@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from datetime import datetime
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -17,6 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient
 from yarl import URL
 
+from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo
@@ -73,7 +73,7 @@ def test_read_metadata_exchange_response__parses_valid_data(
         version=version,
         database_id=UUID("AD50A341-5351-4FC3-82D0-72CFEE369A09"),
         token="thisisnotasecret",
-        expires_at=datetime.fromisoformat("2024-08-05T05:13:59.500444679Z"),
+        expires_at=assume_ok(parse_rfc3339_datetime("2024-08-05T05:13:59.500444679Z")),
         endpoints=(
             EndpointInfo(
                 url=URL("https://db.example.com/v2"),
@@ -106,8 +106,12 @@ def set_path(obj: Any, path: Sequence[str | int], value: object) -> Any:
         ("databaseId/uuid is not a UUID: 'asdf'", ["databaseId"], "asdf"),
         ("token is not a non-empty string", ["token"], ""),
         ("token is not a non-empty string", ["token"], None),
-        ("expiresAt is not an ISO date-time: None", ["expiresAt"], None),
-        ("expiresAt is not an ISO date-time: 'Yesterday'", ["expiresAt"], "Yesterday"),
+        ("expiresAt is not an RFC3339 date-time: None", ["expiresAt"], None),
+        (
+            "expiresAt is not an RFC3339 date-time: 'Yesterday'",
+            ["expiresAt"],
+            "Yesterday",
+        ),
         ("endpoints is not an array", ["endpoints"], None),
         ("endpoints[0] is not an object", ["endpoints", 0], None),
         ("endpoints[0].url is invalid", ["endpoints", 0, "url"], 42),

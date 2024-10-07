@@ -13,6 +13,7 @@ from yarl import URL
 
 from denokv._pycompat.dataclasses import slots_if310
 from denokv._pycompat.enum import StrEnum
+from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.errors import DenoKvError
 from denokv.errors import DenoKvValidationError
 from denokv.result import Err
@@ -103,13 +104,16 @@ def read_metadata_exchange_response(
         return Err(Error("token is not a non-empty string", data))
 
     raw_expires_at = data.get("expiresAt")
-    try:
-        if not isinstance(raw_expires_at, str):
-            raise TypeError("value must be a string")
-        expires_at = datetime.fromisoformat(raw_expires_at)
-    except (TypeError, ValueError) as e:
-        err = Error(f"expiresAt is not an ISO date-time: {raw_expires_at!r}", data=data)
-        err.__cause__ = e
+    parsed_expires_at = None
+    if isinstance(raw_expires_at, str):
+        parsed_expires_at = parse_rfc3339_datetime(raw_expires_at)
+
+    if not isinstance(parsed_expires_at, Ok):
+        err = Error(
+            f"expiresAt is not an RFC3339 date-time: {raw_expires_at!r}", data=data
+        )
+        if isinstance(parsed_expires_at, Err):
+            err.__cause__ = parsed_expires_at.error
         return Err(err)
 
     raw_endpoints = data.get("endpoints")
@@ -155,7 +159,7 @@ def read_metadata_exchange_response(
             database_id=database_id,
             endpoints=tuple(endpoints),
             token=token,
-            expires_at=expires_at,
+            expires_at=parsed_expires_at.value,
         )
     )
 

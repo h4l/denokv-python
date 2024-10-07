@@ -5,7 +5,7 @@ group "default" {
 }
 
 group "lint-all" {
-    targets = ["lint", "lint-protobuf"]
+    targets = ["lint", "lint-mypy", "lint-protobuf"]
 }
 
 function "get_py_image_tag" {
@@ -61,9 +61,21 @@ target "lint" {
     inherits = ["_lint"]
     name = "lint-${lint_type}"
     matrix = {
-        lint_type = ["check", "format", "mypy"],
+        lint_type = ["check", "format"],
     }
     target = "lint-${lint_type}"
+}
+
+target "lint-mypy" {
+    inherits = ["_lint"]
+    name = "lint-mypy-${replace(py, ".", "")}"
+    matrix = {
+        py = py_versions,
+    }
+    args = {
+        PYTHON_VER = get_py_image_tag(py)
+    }
+    target = "lint-mypy"
 }
 
 target "lint-protobuf" {

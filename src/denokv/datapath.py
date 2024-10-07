@@ -320,8 +320,7 @@ async def snapshot_read(
         read_output = SnapshotReadOutput.FromString(response_bytes)
     except ProtobufMessageError as e:
         err = ProtocolViolation(
-            f"Server responded to Data Path request with invalid "
-            f"SnapshotReadOutput: {e}",
+            "Server responded to Data Path request with invalid SnapshotReadOutput",
             data=response_bytes,
             endpoint=endpoint,
         )

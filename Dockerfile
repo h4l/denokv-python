@@ -34,18 +34,18 @@ RUN touch .now
 
 FROM lint-setup AS lint-check
 RUN --mount=source=.,target=/workspace,rw \
-    ruff check src stubs test
+    ruff check src stubs test testing/smoketest
 
 
 FROM lint-setup AS lint-format
 RUN --mount=source=.,target=/workspace,rw \
-    ruff format --check --diff src stubs test
+    ruff format --check --diff src stubs test testing/smoketest
 
 
 FROM lint-setup AS lint-mypy
 RUN --mount=source=.,target=/workspace,rw \
     --mount=type=cache,target=.mypy_cache \
-    mypy src stubs test
+    mypy src stubs test testing/smoketest
 
 
 FROM lint-setup AS lint-protobuf

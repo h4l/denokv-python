@@ -2,7 +2,7 @@ name: "Main"
 on:
   push:
     branches:
-      - test-main
+      - main
   pull_request:
 
 jobs:

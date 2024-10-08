@@ -51,7 +51,7 @@ jobs:
     # default branch, this only runs when the commit is eligible for a dev
     # release, as described above prepare-dev-release.
     if: ${{ needs.prepare-dev-release.outputs.dev_version != '' || (always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
-    environment: release
+    environment: test-release
     runs-on: ubuntu-latest
     permissions:
       # IMPORTANT: this permission is mandatory for trusted publishing

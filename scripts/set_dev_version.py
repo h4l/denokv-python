@@ -37,19 +37,10 @@ def main() -> None:
     dev_number_proc.check_returncode()
     dev_number = int(dev_number_proc.stdout.strip())
 
-    short_sha_proc = run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        shell=False,
-        stdout=PIPE,
-        encoding="utf-8",
-    )
-    short_sha_proc.check_returncode()
-    short_sha = short_sha_proc.stdout.strip()
-
     ver_prefix = raw_version[: dev_match.start()]
     ver_suffix = raw_version[dev_match.end() :]
 
-    this_version = f"{ver_prefix}dev{dev_number:d}{ver_suffix}+{short_sha}"
+    this_version = f"{ver_prefix}dev{dev_number:d}{ver_suffix}"
 
     run(["poetry", "version", this_version], shell=False).check_returncode()
 

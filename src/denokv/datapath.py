@@ -129,11 +129,7 @@ class EndpointNotUsable(DataPathDenoKvError):
         reason: EndpointNotUsableReason,
     ) -> None:
         self.reason = reason
-        auto_retry = (
-            AutoRetry.AFTER_METADATA_EXCHANGE
-            if reason == EndpointNotUsableReason.CONSISTENCY_CHANGED
-            else AutoRetry.AFTER_BACKOFF
-        )
+        auto_retry = AutoRetry.AFTER_METADATA_EXCHANGE
         super().__init__(message, *args, endpoint=endpoint, auto_retry=auto_retry)
 
 

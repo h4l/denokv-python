@@ -1020,7 +1020,7 @@ def _common_prefix_length(a: Sequence[object], b: Sequence[object]) -> int:
     return match_length
 
 
-def open_kv(
+async def open_kv(
     target: URL | str | KvCredentials,
     *,
     access_token: str | None = None,

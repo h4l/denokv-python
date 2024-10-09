@@ -961,24 +961,25 @@ async def test_Kv_list__retries_retryable_snapshot_read_errors(
 
 def test_open_kv__requires_event_loop_to_default_session() -> None:
     with pytest.raises(RuntimeError, match=r"no running event loop"):
-        open_kv("http://0.0.0.0", access_token="example")
+        aiohttp.ClientSession()
 
 
-def test_open_kv__validates_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest_mark_asyncio
+async def test_open_kv__validates_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DENO_KV_ACCESS_TOKEN", raising=False)
 
     with pytest.raises(
         ValueError,
         match=r"Cannot open KV database: target argument str is not a valid URL:",
     ):
-        open_kv("http://0.0.0.0:invalid")
+        await open_kv("http://0.0.0.0:invalid")
 
     with pytest.raises(
         ValueError,
         match=r"Cannot open KV database: access_token argument is None and "
         r"DENO_KV_ACCESS_TOKEN environment variable is not set",
     ):
-        open_kv("http://0.0.0.0")  # no access token
+        await open_kv("http://0.0.0.0")  # no access token
 
 
 @pytest_mark_asyncio
@@ -987,14 +988,14 @@ async def test_open_kv(
 ) -> None:
     monkeypatch.setenv("DENO_KV_ACCESS_TOKEN", "envsecret")
 
-    kv = open_kv("https://0.0.0.0/example")
+    kv = await open_kv("https://0.0.0.0/example")
     assert isinstance(kv.metadata_cache.authenticator, Authenticator)
     credentials = kv.metadata_cache.authenticator.credentials
     assert credentials.server_url == URL("https://0.0.0.0/example")
     assert credentials.access_token == "envsecret"
     await kv.session.close()
 
-    kv = open_kv(
+    kv = await open_kv(
         "https://0.0.0.0/example",
         access_token="argsecret",
         session=client_session,

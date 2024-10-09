@@ -99,7 +99,7 @@ async def run_denokv_server(*, addr: str, token: str, db_path: Path) -> None:
 
 
 async def communicate_with_denokv(*, server_url: URL, access_token: str) -> None:
-    kv = denokv.open_kv(server_url, access_token=access_token)
+    kv = await denokv.open_kv(server_url, access_token=access_token)
     async with kv.session:
         k, entry = await kv.get(("smoketest",))
 

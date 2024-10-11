@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Iterable
+from typing import Sequence
+
 import pytest
 
 from denokv.result import Err
@@ -49,3 +52,50 @@ def test_is_err(result: Result[int, ValueError]) -> None:
     else:
         i: int = result.value
         assert i == 1
+
+
+def test_ok_covariance() -> None:
+    """
+    Test that Ok type annotations merge correctly.
+
+    For types T1, T2, where T1 is a subtype of T2, Ok[T1] must be assignable to
+    Ok[T2].
+
+    For example, an Ok[Sequence] can be assigned to an Ok[Iterable].
+    """
+
+    def get_seq() -> Result[Sequence[int], Exception]:
+        return Ok((1, 2, 3))
+
+    def maybe_use_iterable(things: Result[Iterable[float], Exception]) -> None:
+        pass
+
+    seq_result = get_seq()
+    maybe_use_iterable(seq_result)
+
+
+def test_error_covariance() -> None:
+    """
+    Test that Err type annotations merge correctly.
+
+    For types E1, E2, where E1 is a subtype of E2, Err[E1] must be assignable to
+    Err[E2].
+
+    For example, an Err[ValueError] can be assigned to an Err[Exception].
+    """
+
+    def do_thing(a: int) -> Result[int, ValueError]:
+        return Err(ValueError("foo"))
+
+    def do_thing_2(a: int | str) -> Result[int, TypeError | ValueError]:
+        if isinstance(a, int):
+            return do_thing(a)
+        return Err(TypeError("a must be int"))
+
+    def use_error(err: Err[Exception]) -> None:
+        pass
+
+    result = do_thing_2(1)
+    assert is_err(result)
+    assert isinstance(result.error, ValueError) and str(result.error) == "foo"
+    use_error(result)

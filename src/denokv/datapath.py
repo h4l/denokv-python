@@ -10,11 +10,14 @@ from dataclasses import dataclass
 from enum import Enum
 from enum import auto
 from typing import TYPE_CHECKING
+from typing import AbstractSet
 from typing import Awaitable
 from typing import Callable
 from typing import Container
 from typing import Final
+from typing import Iterable
 from typing import Protocol
+from typing import Sequence
 from typing import TypedDict
 from typing import overload
 from typing import runtime_checkable
@@ -26,6 +29,10 @@ from fdb.tuple import unpack
 from google.protobuf.message import Error as ProtobufMessageError
 from v8serialize import Decoder
 
+from denokv._datapath_pb2 import AtomicWrite
+from denokv._datapath_pb2 import AtomicWriteOutput
+from denokv._datapath_pb2 import AtomicWriteStatus
+from denokv._datapath_pb2 import Check
 from denokv._datapath_pb2 import KvEntry
 from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import SnapshotRead
@@ -194,6 +201,50 @@ class RequestUnsuccessful(DataPathDenoKvError):
     pass
 
 
+@dataclass(init=False)
+class CheckFailure(DataPathDenoKvError):
+    """
+    The KV server could not complete an Atomic Write because of a concurrent change.
+
+    This is an expected response to Atomic Write requests that occurs when one
+    or more of the checks an Atomic Write is conditional on are found to not
+    hold at the point that the database attempts to commit the write, because
+    another Atomic Write has written new version(s) of the key(s) referenced by
+    the check(s). The client must re-read the keys it was attempting to write,
+    and submit a new Atomic Write if necessary that reflects the latest state of
+    the keys.
+    """
+
+    all_checks: Sequence[Check]
+    """All of the Checks sent with the AtomicWrite."""
+    failed_check_indexes: AbstractSet[int]
+    """
+    The indexes of Checks in all_checks keys whose versionstamp check failed.
+
+    The set is sorted with ascending iteration order.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        all_checks: Iterable[Check],
+        failed_check_indexes: Iterable[int],
+        *args: object,
+        endpoint: EndpointInfo,
+    ) -> None:
+        super().__init__(message, *args, endpoint=endpoint, auto_retry=AutoRetry.NEVER)
+
+        self.all_checks = tuple(all_checks)
+        if len(self.all_checks) == 0:
+            raise ValueError("all_checks is empty")
+        ordered_indexes = sorted(failed_check_indexes)
+        if len(ordered_indexes) == 0:
+            raise ValueError("failed_check_indexes is empty")
+        if ordered_indexes[0] < 0 or ordered_indexes[-1] >= len(self.all_checks):
+            raise IndexError("failed_check_indexes contains out-of-bounds index")
+        self.failed_check_indexes = {i: True for i in ordered_indexes}.keys()
+
+
 DataPathError: TypeAlias = (
     "EndpointNotUsable | RequestUnsuccessful | ResponseUnsuccessful | ProtocolViolation"
 )
@@ -201,7 +252,7 @@ DataPathError: TypeAlias = (
 
 class _DataPathRequestKind(Enum):
     SnapshotRead = "snapshot_read"
-    SnapshotWrite = "snapshot_write"
+    AtomicWrite = "atomic_write"
     Watch = "watch"
 
 
@@ -391,6 +442,150 @@ async def snapshot_read(
         )
 
     return Ok(read_output)
+
+
+AtomicWriteResult: TypeAlias = "Result[bytes, CheckFailure | DataPathError]"
+
+
+async def atomic_write(
+    *,
+    session: aiohttp.ClientSession,
+    meta: DatabaseMetadata,
+    endpoint: EndpointInfo,
+    write: AtomicWrite,
+) -> AtomicWriteResult:
+    """
+    Perform a Data Path Atomic Write request against a database endpoint.
+
+    The endpoint must have strong consistency. The write is conditional on the
+    checks of the provided AtomicWrite passing. Callers must expect to need to
+    retry a write when these checks are not satisfied due to another write
+    having modified a checked key. The result is an Err containing a
+    [CheckFailure](`denokv.datapath.CheckFailure`) when checks fail.
+
+    When the write succeeds, the return value is the 10-byte versionstamp of the
+    committed version.
+
+    The request does not retry on error conditions, the caller is responsible
+    for retrying if they wish. The Err results report whether retries are
+    permitted by the Data Path protocol spec using their `auto_retry: AutoRetry`
+    field.
+
+    Returns
+    -------
+    Ok[bytes]:
+        10-byte versionstamp when the write succeeds
+    Err[CheckFailure]:
+        When one or more of the AtomicWrite's checks are not satisfied.
+    Err[ProtocolViolation]:
+        When the endpoint sends an unexpected response violating the protocol
+        spec.
+    Err[RequestUnsuccessful]:
+        When the request cannot be sent, e.g. due to a network error.
+    Err[ResponseUnsuccessful]:
+        When the request is not handled successfully by the endpoint, e.g. due
+        to a the service being unavailable.
+    """
+    if endpoint.consistency is not ConsistencyLevel.STRONG:
+        raise ValueError(
+            f"endpoints used with atomic_write must be "
+            f"{ConsistencyLevel.STRONG!r}: {endpoint}"
+        )
+
+    result = await _datapath_request(
+        kind=_DataPathRequestKind.AtomicWrite,
+        session=session,
+        meta=meta,
+        endpoint=endpoint,
+        request_body=write.SerializeToString(),
+        handle_response=_response_body_bytes,
+    )
+    if isinstance(result, Err):
+        return result
+    response_bytes = result.value
+
+    try:
+        write_output = AtomicWriteOutput.FromString(response_bytes)
+    except ProtobufMessageError as e:
+        err = ProtocolViolation(
+            "Server responded to Data Path request with invalid AtomicWriteOutput",
+            data=response_bytes,
+            endpoint=endpoint,
+        )
+        err.__cause__ = e
+        return Err(err)
+
+    if write_output.status == AtomicWriteStatus.AW_SUCCESS:
+        if len(write_output.failed_checks) != 0:
+            return Err(
+                ProtocolViolation(
+                    "Server responded to Data Path Atomic Write with "
+                    "SUCCESS containing failed checks",
+                    data=write_output,
+                    endpoint=endpoint,
+                )
+            )
+        if len(write_output.versionstamp) != 10:
+            return Err(
+                ProtocolViolation(
+                    "Server responded to Data Path Atomic Write with "
+                    "SUCCESS containing an invalid versionstamp",
+                    data=write_output,
+                    endpoint=endpoint,
+                )
+            )
+        return Ok(write_output.versionstamp)
+    elif write_output.status == AtomicWriteStatus.AW_CHECK_FAILURE:
+        try:
+            return Err(
+                CheckFailure(
+                    "Not all checks required by the Atomic Write passed",
+                    all_checks=write.checks,
+                    failed_check_indexes=write_output.failed_checks,
+                    endpoint=endpoint,
+                )
+            )
+        except IndexError as e:
+            err = ProtocolViolation(
+                "Server responded to Data Path Atomic Write with "
+                "CHECK_FAILURE referencing out-of-bounds check index",
+                data=write_output,
+                endpoint=endpoint,
+            )
+            err.__cause__ = e
+            return Err(err)
+        except ValueError as e:
+            err = ProtocolViolation(
+                "Server responded to Data Path Atomic Write with "
+                "CHECK_FAILURE containing no failed checks",
+                data=write_output,
+                endpoint=endpoint,
+            )
+            err.__cause__ = e
+            return Err(err)
+    elif write_output.status == AtomicWriteStatus.AW_WRITE_DISABLED:
+        return Err(
+            EndpointNotUsable(
+                "Server responded to Data Path request indicating it is cannot "
+                "write this database",
+                endpoint=endpoint,
+                reason=EndpointNotUsableReason.DISABLED,
+            )
+        )
+    else:
+        msg = (
+            "UNSPECIFIED"
+            if write_output.status == AtomicWriteStatus.AW_UNSPECIFIED
+            else f"unknown: {write_output.status}"
+        )
+        return Err(
+            ProtocolViolation(
+                f"Server responded to Data Path Atomic Write request with "
+                f"status {msg}",
+                data=write_output,
+                endpoint=endpoint,
+            )
+        )
 
 
 def is_kv_key_tuple(tup: object) -> TypeGuard[KvKeyTuple]:

@@ -10,6 +10,8 @@ from typing import Callable
 from typing import Final
 from typing import Literal
 from typing import Mapping
+from typing import Sequence
+from typing import TypeVar
 from typing import cast
 from uuid import UUID
 
@@ -18,8 +20,10 @@ import pytest_asyncio
 import v8serialize
 from aiohttp import web
 from aiohttp.test_utils import TestClient as _TestClient
+from aiohttp.typedefs import Handler
 from fdb.tuple import pack
 from fdb.tuple import unpack
+from google.protobuf.message import Message
 from hypothesis import given
 from hypothesis import strategies as st
 from typing_extensions import TypeAlias
@@ -27,7 +31,14 @@ from v8serialize import Decoder
 from yarl import URL
 
 from denokv import datapath
+from denokv._datapath_pb2 import AtomicWrite
+from denokv._datapath_pb2 import AtomicWriteOutput
+from denokv._datapath_pb2 import AtomicWriteStatus
+from denokv._datapath_pb2 import Check
 from denokv._datapath_pb2 import KvEntry as ProtobufKvEntry
+from denokv._datapath_pb2 import KvValue
+from denokv._datapath_pb2 import Mutation
+from denokv._datapath_pb2 import MutationType
 from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import ReadRangeOutput
 from denokv._datapath_pb2 import SnapshotRead
@@ -47,6 +58,8 @@ from denokv.datapath import KvKeyTuple
 from denokv.datapath import ProtocolViolation
 from denokv.datapath import RequestUnsuccessful
 from denokv.datapath import ResponseUnsuccessful
+from denokv.datapath import _DataPathRequestKind
+from denokv.datapath import atomic_write
 from denokv.datapath import increment_packed_key
 from denokv.datapath import is_any_kv_key
 from denokv.datapath import is_kv_key_tuple
@@ -61,14 +74,19 @@ from denokv.kv import VersionStamp
 from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok
+from denokv.result import Result
+from denokv.result import is_ok
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
 from test.denokv_testing import nextafter
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
+from test.denokv_testing import v8_bigint_encoder
 
 TestClient: TypeAlias = _TestClient[web.Request, web.Application]
 
 pytest_mark_asyncio = pytest.mark.asyncio()
+
+MessageT = TypeVar("MessageT", bound=Message)
 
 
 @pytest.fixture
@@ -100,7 +118,7 @@ def db_api(mock_db: MockKvDb) -> web.Application:
             raise AssertionError("handler is not registered at /v[123]/ URL path")
         return cast(Literal[1, 2, 3], version)
 
-    async def strong_snapshot_read(request: web.Request) -> web.Response:
+    def validate_request(request: web.Request) -> None:
         server_version = get_server_version(request)
 
         if request.method != "POST":
@@ -130,18 +148,27 @@ def db_api(mock_db: MockKvDb) -> web.Application:
                     f"talking to a v{server_version} server"
                 ) from None
 
-        req_body_bytes = await request.read()
+    def parse_protobuf_body(
+        body_bytes: bytes, message_type: type[MessageT]
+    ) -> MessageT:
+        message = message_type()
         try:
-            read = SnapshotRead()
-            count = read.ParseFromString(req_body_bytes)
-            if len(req_body_bytes) != count:
+            count = message.ParseFromString(body_bytes)
+            if len(body_bytes) != count:
                 raise ValueError(
-                    f"{len(req_body_bytes) - count} trailing bytes after SnapshotRead"
+                    f"{len(body_bytes) - count} trailing bytes after "
+                    f"{message_type.__name__}"
                 )
         except Exception as e:
             raise web.HTTPBadRequest(
-                body=f"body is not a valid SnapshotRead message: {e}"
+                body=f"body is not a valid {message_type.__name__} message: {e}"
             ) from e
+        return message
+
+    # Valid snapshot_read handler
+    async def strong_snapshot_read(request: web.Request) -> web.Response:
+        validate_request(request)
+        read = parse_protobuf_body(await request.read(), SnapshotRead)
 
         read_result = SnapshotReadOutput(
             status=SnapshotReadStatus.SR_SUCCESS,
@@ -154,6 +181,24 @@ def db_api(mock_db: MockKvDb) -> web.Application:
             body=read_result.SerializeToString(),
         )
 
+    # Valid atomic_write handler
+    async def atomic_write(request: web.Request) -> web.Response:
+        validate_request(request)
+
+        write = parse_protobuf_body(await request.read(), AtomicWrite)
+
+        try:
+            write_result = mock_db.atomic_write(write)
+        except ValueError as e:
+            raise web.HTTPBadRequest(body=f"SnapshotWrite is not valid: {e}") from e
+
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=write_result.SerializeToString(),
+        )
+
+    # Generic Data Path errors
     async def violation_2xx_text_body(request: web.Request) -> web.Response:
         """Only 200, not 2xx is the permitted successful response status."""
         return web.Response(
@@ -196,6 +241,7 @@ def db_api(mock_db: MockKvDb) -> web.Application:
             body=b"\x00foo",
         )
 
+    # Invalid snapshot_read handlers
     async def unusable_disabled_via_read_disabled(request: web.Request) -> web.Response:
         return web.Response(
             status=200,
@@ -254,23 +300,117 @@ def db_api(mock_db: MockKvDb) -> web.Application:
             ).SerializeToString(),
         )
 
+    # Invalid atomic_write handlers
+    async def violation_atomic_write_success_with_failed_checks(
+        request: web.Request,
+    ) -> web.Response:
+        write = AtomicWrite()
+        write.ParseFromString(await request.read())
+        assert len(write.checks) > 0, "write request must have at least one check"
+
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=AtomicWriteOutput(
+                status=AtomicWriteStatus.AW_SUCCESS,
+                failed_checks=[0],
+                versionstamp=VersionStamp(0),
+            ).SerializeToString(),
+        )
+
+    async def violation_atomic_write_success_with_invalid_versionstamp(
+        request: web.Request,
+    ) -> web.Response:
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=AtomicWriteOutput(
+                status=AtomicWriteStatus.AW_SUCCESS, versionstamp=b"\xff"
+            ).SerializeToString(),
+        )
+
+    async def violation_atomic_write_check_failure_with_out_of_bounds_index(
+        request: web.Request,
+    ) -> web.Response:
+        write = AtomicWrite()
+        write.ParseFromString(await request.read())
+        assert len(write.checks) > 0, "write request must have at least one check"
+
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=AtomicWriteOutput(
+                status=AtomicWriteStatus.AW_CHECK_FAILURE,
+                failed_checks=[len(write.checks)],
+            ).SerializeToString(),
+        )
+
+    async def violation_atomic_write_check_failure_without_failed_checks(
+        request: web.Request,
+    ) -> web.Response:
+        write = AtomicWrite()
+        write.ParseFromString(await request.read())
+        assert len(write.checks) > 0, "write request must have at least one check"
+
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=AtomicWriteOutput(
+                status=AtomicWriteStatus.AW_CHECK_FAILURE
+            ).SerializeToString(),
+        )
+
+    async def violation_atomic_write_unspecified_status(
+        request: web.Request,
+    ) -> web.Response:
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=AtomicWriteOutput(
+                status=AtomicWriteStatus.AW_UNSPECIFIED
+            ).SerializeToString(),
+        )
+
+    async def violation_atomic_write_invalid_status(
+        request: web.Request,
+    ) -> web.Response:
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=AtomicWriteOutput(
+                status=max(AtomicWriteStatus.values()) + 1  # type: ignore[attr-defined]
+            ).SerializeToString(),
+        )
+
+    async def unusable_atomic_write(request: web.Request) -> web.Response:
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=AtomicWriteOutput(
+                status=AtomicWriteStatus.AW_WRITE_DISABLED
+            ).SerializeToString(),
+        )
+
+    def add_datapath_post(app: web.Application, path: str, handler: Handler) -> None:
+        assert path.startswith("/") and not path.endswith("/")
+        for req_kind in _DataPathRequestKind:
+            app.router.add_post(f"{path}/{req_kind.value}", handler)
+
     app = web.Application()
-    app.router.add_post(
-        "/violation_2xx_text_body/snapshot_read", violation_2xx_text_body
+
+    # Generic error endpoints
+    add_datapath_post(app, "/violation_2xx_text_body", violation_2xx_text_body)
+
+    add_datapath_post(app, "/violation_2xx_protobuf_body", violation_2xx_protobuf_body)
+    add_datapath_post(app, "/violation_307", violation_307)
+    add_datapath_post(app, "/errors_401", errors_401)
+    add_datapath_post(app, "/errors_503", errors_503)
+    add_datapath_post(app, "/violation_bad_content_type", violation_bad_content_type)
+    add_datapath_post(
+        app, "/violation_invalid_protobuf_body", violation_invalid_protobuf_body
     )
-    app.router.add_post(
-        "/violation_2xx_protobuf_body/snapshot_read", violation_2xx_protobuf_body
-    )
-    app.router.add_post("/violation_307/snapshot_read", violation_307)
-    app.router.add_post("/errors_401/snapshot_read", errors_401)
-    app.router.add_post("/errors_503/snapshot_read", errors_503)
-    app.router.add_post(
-        "/violation_bad_content_type/snapshot_read", violation_bad_content_type
-    )
-    app.router.add_post(
-        "/violation_invalid_protobuf_body/snapshot_read",
-        violation_invalid_protobuf_body,
-    )
+
+    # snapshot_read only error endpoints
     app.router.add_post(
         "/unusable_disabled_via_read_disabled/snapshot_read",
         unusable_disabled_via_read_disabled,
@@ -291,9 +431,39 @@ def db_api(mock_db: MockKvDb) -> web.Application:
         "/violation_wrong_ranges/snapshot_read",
         violation_wrong_ranges,
     )
+
+    # atomic_write only error endpoints
+    app.router.add_post(
+        "/success_with_failed_checks/atomic_write",
+        violation_atomic_write_success_with_failed_checks,
+    )
+    app.router.add_post(
+        "/success_with_invalid_versionstamp/atomic_write",
+        violation_atomic_write_success_with_invalid_versionstamp,
+    )
+    app.router.add_post(
+        "/check_failure_with_out_of_bounds_index/atomic_write",
+        violation_atomic_write_check_failure_with_out_of_bounds_index,
+    )
+    app.router.add_post(
+        "/check_failure_without_failed_checks/atomic_write",
+        violation_atomic_write_check_failure_without_failed_checks,
+    )
+    app.router.add_post("/unusable/atomic_write", unusable_atomic_write)
+    app.router.add_post(
+        "/unspecified_status/atomic_write", violation_atomic_write_unspecified_status
+    )
+    app.router.add_post(
+        "/invalid_status/atomic_write", violation_atomic_write_invalid_status
+    )
+
+    # Working endpoints
     app.router.add_post("/v1/consistency/strong/snapshot_read", strong_snapshot_read)
     app.router.add_post("/v2/consistency/strong/snapshot_read", strong_snapshot_read)
     app.router.add_post("/v3/consistency/strong/snapshot_read", strong_snapshot_read)
+    app.router.add_post("/v1/consistency/strong/atomic_write", atomic_write)
+    app.router.add_post("/v2/consistency/strong/atomic_write", atomic_write)
+    app.router.add_post("/v3/consistency/strong/atomic_write", atomic_write)
     return app
 
 
@@ -331,66 +501,109 @@ def make_database_metadata_for_endpoint(
 
 
 @pytest.mark.parametrize(
+    "datapath_request_fn",
+    [
+        pytest.param(
+            functools.partial(snapshot_read, read=SnapshotRead()), id="snapshot_read"
+        ),
+        pytest.param(
+            functools.partial(atomic_write, write=AtomicWrite()), id="atomic_write"
+        ),
+    ],
+)
+@pytest_mark_asyncio
+async def test_datapath_request_function__handles_network_error(
+    client: TestClient,
+    unused_tcp_port_factory: Callable[[], int],
+    datapath_request_fn: functools.partial[Awaitable[Result[object, object]]],
+) -> None:
+    server_url = client.make_url("/")
+    server_url = server_url.with_port(unused_tcp_port_factory())
+
+    meta, endpoint = make_database_metadata_for_endpoint(endpoint_url=server_url)
+
+    # will fail to connect to URL with nothing listening on the port
+    result = await datapath_request_fn(
+        session=client.session,
+        meta=meta,
+        endpoint=endpoint,
+    )
+    assert isinstance(result, Err)
+    assert result.error == RequestUnsuccessful(
+        "Failed to make Data Path HTTP request to KV server",
+        endpoint=endpoint,
+        auto_retry=AutoRetry.AFTER_BACKOFF,
+    )
+
+
+generic_datapath_unsuccessful_response_params: Sequence[
+    tuple[str, Callable[[EndpointInfo], DataPathDenoKvError]]
+] = [
+    (
+        "/violation_2xx_text_body",
+        lambda endpoint: ResponseUnsuccessful(
+            "Server responded to Data Path request with unexpected HTTP status",
+            status=201,
+            body_text="Strange behaviour.",
+            auto_retry=AutoRetry.NEVER,
+            endpoint=endpoint,
+        ),
+    ),
+    (
+        "/violation_2xx_protobuf_body",
+        lambda endpoint: ResponseUnsuccessful(
+            "Server responded to Data Path request with unexpected HTTP status",
+            status=201,
+            body_text="Response content-type: application/x-protobuf",
+            auto_retry=AutoRetry.NEVER,
+            endpoint=endpoint,
+        ),
+    ),
+    (
+        "/violation_307",
+        lambda endpoint: ResponseUnsuccessful(
+            "Server responded to Data Path request with unexpected HTTP status",
+            status=307,
+            body_text="testdb: redirecting to /foo",
+            auto_retry=AutoRetry.NEVER,
+            endpoint=endpoint,
+        ),
+    ),
+    (
+        "/errors_401",
+        lambda endpoint: ResponseUnsuccessful(
+            "Server rejected Data Path request indicating client error",
+            status=401,
+            body_text="testdb: Unauthorized",
+            auto_retry=AutoRetry.NEVER,
+            endpoint=endpoint,
+        ),
+    ),
+    (
+        "/errors_503",
+        lambda endpoint: ResponseUnsuccessful(
+            "Server failed to respond to Data Path request indicating server error",
+            status=503,
+            body_text="testdb: Unavailable",
+            auto_retry=AutoRetry.AFTER_BACKOFF,
+            endpoint=endpoint,
+        ),
+    ),
+    (
+        "/violation_bad_content_type",
+        lambda endpoint: ProtocolViolation(
+            "response content-type is not application/x-protobuf: text/plain",
+            data="text/plain",
+            endpoint=endpoint,
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(
     "path, mk_error",
     [
-        (
-            "/violation_2xx_text_body",
-            lambda endpoint: ResponseUnsuccessful(
-                "Server responded to Data Path request with unexpected HTTP status",
-                status=201,
-                body_text="Strange behaviour.",
-                auto_retry=AutoRetry.NEVER,
-                endpoint=endpoint,
-            ),
-        ),
-        (
-            "/violation_2xx_protobuf_body",
-            lambda endpoint: ResponseUnsuccessful(
-                "Server responded to Data Path request with unexpected HTTP status",
-                status=201,
-                body_text="Response content-type: application/x-protobuf",
-                auto_retry=AutoRetry.NEVER,
-                endpoint=endpoint,
-            ),
-        ),
-        (
-            "/violation_307",
-            lambda endpoint: ResponseUnsuccessful(
-                "Server responded to Data Path request with unexpected HTTP status",
-                status=307,
-                body_text="testdb: redirecting to /foo",
-                auto_retry=AutoRetry.NEVER,
-                endpoint=endpoint,
-            ),
-        ),
-        (
-            "/errors_401",
-            lambda endpoint: ResponseUnsuccessful(
-                "Server rejected Data Path request indicating client error",
-                status=401,
-                body_text="testdb: Unauthorized",
-                auto_retry=AutoRetry.NEVER,
-                endpoint=endpoint,
-            ),
-        ),
-        (
-            "/errors_503",
-            lambda endpoint: ResponseUnsuccessful(
-                "Server failed to respond to Data Path request indicating server error",
-                status=503,
-                body_text="testdb: Unavailable",
-                auto_retry=AutoRetry.AFTER_BACKOFF,
-                endpoint=endpoint,
-            ),
-        ),
-        (
-            "/violation_bad_content_type",
-            lambda endpoint: ProtocolViolation(
-                "response content-type is not application/x-protobuf: text/plain",
-                data="text/plain",
-                endpoint=endpoint,
-            ),
-        ),
+        *generic_datapath_unsuccessful_response_params,
         (
             "/violation_invalid_protobuf_body",
             lambda endpoint: ProtocolViolation(
@@ -467,31 +680,6 @@ async def test_snapshot_read__handles_unsuccessful_responses(
     )
     assert isinstance(result, Err)
     assert result.error == error
-
-
-@pytest_mark_asyncio
-async def test_snapshot_read__handles_network_error(
-    client: TestClient, unused_tcp_port_factory: Callable[[], int]
-) -> None:
-    server_url = client.make_url("/")
-    server_url = server_url.with_port(unused_tcp_port_factory())
-
-    meta, endpoint = make_database_metadata_for_endpoint(endpoint_url=server_url)
-    read = SnapshotRead(ranges=[])
-
-    # will fail to connect to URL with nothing listening on the port
-    result = await snapshot_read(
-        session=client.session,
-        meta=meta,
-        endpoint=endpoint,
-        read=read,
-    )
-    assert isinstance(result, Err)
-    assert result.error == RequestUnsuccessful(
-        "Failed to make Data Path HTTP request to KV server",
-        endpoint=endpoint,
-        auto_retry=AutoRetry.AFTER_BACKOFF,
-    )
 
 
 @pytest.mark.parametrize(
@@ -629,6 +817,232 @@ async def test_snapshot_read__reads_expected_values(
     ]
     expected_result_ranges = [
         [KvEntry(KvKey(*key), value, versionstamp=ver) for (key, value) in entries]
+        for entries in result_ranges
+    ]
+    assert actual_result_ranges == expected_result_ranges
+
+
+@pytest_mark_asyncio
+async def test_atomic_write__raises_when_given_endpoint_without_strong_consistency(
+    client: TestClient,
+) -> None:
+    # this is considered an avoidable programmer error, so it raises
+    meta, eventual_endpoint = make_database_metadata_for_endpoint(
+        URL("https://example/"), endpoint_consistency=ConsistencyLevel.EVENTUAL
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"endpoints used with atomic_write must be "
+        r"<ConsistencyLevel.STRONG: 'strong'>",
+    ):
+        await atomic_write(
+            session=client.session,
+            meta=meta,
+            endpoint=eventual_endpoint,
+            write=AtomicWrite(),
+        )
+
+
+@pytest.mark.parametrize(
+    "path, mk_error",
+    [
+        *generic_datapath_unsuccessful_response_params,
+        (
+            "/violation_invalid_protobuf_body",
+            lambda endpoint: ProtocolViolation(
+                "Server responded to Data Path request with invalid "
+                "AtomicWriteOutput",
+                data=b"\x00foo",
+                endpoint=endpoint,
+            ),
+        ),
+        (
+            "/success_with_failed_checks",
+            lambda endpoint: ProtocolViolation(
+                "Server responded to Data Path Atomic Write with SUCCESS "
+                "containing failed checks",
+                data=AtomicWriteOutput(
+                    status=AtomicWriteStatus.AW_SUCCESS,
+                    failed_checks=[0],
+                    versionstamp=VersionStamp(0),
+                ),
+                endpoint=endpoint,
+            ),
+        ),
+        (
+            "/success_with_invalid_versionstamp",
+            lambda endpoint: ProtocolViolation(
+                "Server responded to Data Path Atomic Write with SUCCESS "
+                "containing an invalid versionstamp",
+                data=AtomicWriteOutput(
+                    status=AtomicWriteStatus.AW_SUCCESS,
+                    versionstamp=b"\xff",
+                ),
+                endpoint=endpoint,
+            ),
+        ),
+        (
+            "/check_failure_with_out_of_bounds_index",
+            lambda endpoint: ProtocolViolation(
+                "Server responded to Data Path Atomic Write with CHECK_FAILURE "
+                "referencing out-of-bounds check index",
+                data=AtomicWriteOutput(
+                    status=AtomicWriteStatus.AW_CHECK_FAILURE,
+                    failed_checks=[1],
+                ),
+                endpoint=endpoint,
+            ),
+        ),
+        (
+            "/check_failure_without_failed_checks",
+            lambda endpoint: ProtocolViolation(
+                "Server responded to Data Path Atomic Write with CHECK_FAILURE "
+                "containing no failed checks",
+                data=AtomicWriteOutput(status=AtomicWriteStatus.AW_CHECK_FAILURE),
+                endpoint=endpoint,
+            ),
+        ),
+        (
+            "/unspecified_status",
+            lambda endpoint: ProtocolViolation(
+                "Server responded to Data Path Atomic Write request "
+                "with status UNSPECIFIED",
+                data=AtomicWriteOutput(status=AtomicWriteStatus.AW_UNSPECIFIED),
+                endpoint=endpoint,
+            ),
+        ),
+        (
+            "/invalid_status",
+            lambda endpoint: ProtocolViolation(
+                "Server responded to Data Path Atomic Write request "
+                "with status unknown: 6",
+                data=AtomicWriteOutput(status=6),  # type: ignore[arg-type]
+                endpoint=endpoint,
+            ),
+        ),
+        (
+            "/unusable",
+            lambda endpoint: EndpointNotUsable(
+                "Server responded to Data Path request indicating it is cannot "
+                "write this database",
+                reason=EndpointNotUsableReason.DISABLED,
+                endpoint=endpoint,
+            ),
+        ),
+    ],
+)
+@pytest_mark_asyncio
+async def test_atomic_write__handles_unsuccessful_responses(
+    client: TestClient,
+    path: str,
+    mk_error: Callable[[EndpointInfo], DataPathDenoKvError],
+) -> None:
+    server_url = client.make_url(path)
+    meta, endpoint = make_database_metadata_for_endpoint(endpoint_url=server_url)
+    error = mk_error(endpoint)
+    assert isinstance(error, DataPathDenoKvError)
+
+    result = await atomic_write(
+        session=client.session,
+        meta=meta,
+        endpoint=endpoint,
+        write=AtomicWrite(
+            checks=[Check(key=pack_key(("x",)), versionstamp=bytes(VersionStamp(0)))]
+        ),
+    )
+    assert isinstance(result, Err)
+    assert result.error == error
+
+
+@pytest.fixture
+def example_entries_write() -> Mapping[KvKeyTuple, object]:
+    return {("bigint", 1): 10}
+
+
+# There's not really much point in testing many successful mutations here, as
+# our atomic_write() function is just passing along the encoded protobuf data
+# without doing anything to it — we're just testing the db implementation if we
+# were to test lots of things here. Error cases are where all the work is.
+@pytest.mark.parametrize(
+    "write, read_ranges, result_ranges",
+    [
+        pytest.param(AtomicWrite(), [], [], id="empty"),
+        pytest.param(
+            AtomicWrite(
+                mutations=[
+                    Mutation(
+                        key=pack_key(("bigint", 1)),
+                        value=KvValue(
+                            data=bytes(v8_bigint_encoder.encode(20)),
+                            encoding=ValueEncoding.VE_V8,
+                        ),
+                        mutation_type=MutationType.M_SET,
+                    )
+                ]
+            ),
+            [
+                ReadRange(
+                    start=pack_key(("bigint", 1)), end=pack_key(("bigint", 2)), limit=1
+                ),
+            ],
+            [[(KvKey("bigint", 1), 20)]],
+            id="set",
+        ),
+        pytest.param(
+            AtomicWrite(
+                mutations=[
+                    Mutation(
+                        key=pack_key(("bigint", 1)),
+                        value=KvValue(
+                            data=bytes(v8_bigint_encoder.encode(20)),
+                            encoding=ValueEncoding.VE_V8,
+                        ),
+                        mutation_type=MutationType.M_SUM,
+                    )
+                ]
+            ),
+            [
+                ReadRange(
+                    start=pack_key(("bigint", 1)), end=pack_key(("bigint", 2)), limit=1
+                ),
+            ],
+            [[(KvKey("bigint", 1), 30)]],
+            id="sum",
+        ),
+    ],
+)
+@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest_mark_asyncio
+async def test_atomic_write__writes_expected_values(
+    client: TestClient,
+    mock_db: MockKvDb,
+    example_entries_write: Mapping[KvKeyTuple, object],
+    write: AtomicWrite,
+    read_ranges: list[ReadRange],
+    result_ranges: list[list[tuple[KvKeyTuple, object]]],
+    version: Literal[1, 2, 3],
+) -> None:
+    server_url = client.make_url(f"/v{version}/consistency/strong/")
+    meta, endpoint = make_database_metadata_for_endpoint(
+        endpoint_url=server_url, version=version
+    )
+    add_entries(mock_db, example_entries_write)
+
+    write_result = await atomic_write(
+        session=client.session, meta=meta, endpoint=endpoint, write=write
+    )
+
+    assert is_ok(write_result)
+    write_ver = VersionStamp(write_result.value)
+
+    actual_result_ranges = [
+        [unsafe_parse_protobuf_kv_entry(raw_entry) for raw_entry in res_range.values]
+        for res_range in (
+            mock_db.snapshot_read_range(read=range) for range in read_ranges
+        )
+    ]
+    expected_result_ranges = [
+        [KvEntry(key, value, versionstamp=write_ver) for (key, value) in entries]
         for entries in result_ranges
     ]
     assert actual_result_ranges == expected_result_ranges

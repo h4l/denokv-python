@@ -92,6 +92,10 @@ ignore = [
   "D103", # "Missing docstring in public function" — not everything is documented yet
   "D104", # "Missing docstring in public package" — not everything is documented yet
   "D105", # "Missing docstring in magic method" — not everything is documented yet
+  # Allow annotating int | float (which is technically redundant, but IMO
+  # valuable as it communicates intent, given that int and float are not used
+  # interchangeably).
+  "PYI041",
 ]
 
 [tool.ruff.lint.pydocstyle]

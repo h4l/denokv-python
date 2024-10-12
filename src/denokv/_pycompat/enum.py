@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from enum import Enum
 from enum import EnumMeta
 from enum import Flag
 from enum import IntFlag
@@ -67,3 +68,19 @@ if sys.version_info < (3, 12):
 
 else:
     from enum import IntEnum as IntEnum  # noqa: F401  # re-export
+
+
+class EvalEnumRepr(Enum):
+    """
+    An Enum mixin that uses 'EnumName.FIELD' as the repr.
+
+    Example
+    -------
+    >>> class EnumName(EvalEnumRepr, Enum):
+    ...   FIELD = 'a'
+    >>> EnumName.FIELD
+    EnumName.FIELD
+    """
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}.{self.name}"

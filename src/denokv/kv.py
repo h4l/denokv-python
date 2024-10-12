@@ -1,29 +1,41 @@
 from __future__ import annotations
 
 import asyncio
+from abc import ABC
 from base64 import urlsafe_b64decode
 from base64 import urlsafe_b64encode
 from binascii import unhexlify
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import datetime
+from enum import Enum
 from enum import Flag
 from enum import auto
 from os import environ
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 from typing import AsyncIterator
 from typing import Awaitable
 from typing import Callable
 from typing import ClassVar
+from typing import Container
 from typing import Final
 from typing import Generic
 from typing import Iterable
+from typing import Literal
+from typing import Mapping
+from typing import MutableSequence
 from typing import Protocol
 from typing import Sequence
 from typing import TypedDict
+from typing import Union
+from typing import cast
 from typing import overload
+from typing import runtime_checkable
 
 import aiohttp
 from fdb.tuple import unpack
+from typing_extensions import TypeIs
 from v8serialize import Decoder
 from yarl import URL
 
@@ -31,7 +43,9 @@ from denokv import datapath
 from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
+from denokv._pycompat.dataclasses import FrozenAfterInitDataclass
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.enum import EvalEnumRepr
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
@@ -941,6 +955,408 @@ def _common_prefix_length(a: Sequence[object], b: Sequence[object]) -> int:
             match_length -= 1
             break
     return match_length
+
+
+@dataclass
+class PlannedWrite:
+    checks: MutableSequence[AnyKeyVersion] = field(default_factory=list)
+    mutations: MutableSequence[Mutation] = field(default_factory=list)
+    enqueues: MutableSequence[Enqueue] = field(default_factory=list)
+
+    @overload
+    def check(self, key: AnyKvKey, versionstamp: VersionStamp) -> Self: ...
+
+    @overload
+    def check(self, check: AnyKeyVersion, /) -> Self: ...
+
+    def check(
+        self, key: AnyKvKey | AnyKeyVersion, versionstamp: VersionStamp | None = None
+    ) -> Self:
+        if isinstance(key, AnyKeyVersion):
+            self.checks.append(key)
+            if versionstamp is not None:
+                raise TypeError(
+                    "versionstamp argument cannot be passed when first argument "
+                    "is check object with a key and versionstamp"
+                )
+        else:
+            if versionstamp is None:
+                raise TypeError("versionstamp argument cannot be None")
+            assert versionstamp is not None
+            self.checks.append(Check(key, versionstamp))
+        return self
+
+    def set(self, key: AnyKvKey, value: object, *, versioned: bool = False) -> Self:
+        return self.mutate(Set(key, value, versioned=versioned))
+
+    @overload
+    def sum(self, sum: Sum, /) -> Self: ...
+
+    @overload
+    def sum(self, key: AnyKvKey, value: KvU64) -> Self: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        value: int | float,
+        *,
+        limit_min: int | float | None = None,
+        limit_max: int | float | None = None,
+        limit_exceeded: LimitExceededInput | None = None,
+        limit: Limit | None = None,
+    ) -> Self: ...
+
+    def sum(
+        self,
+        key: AnyKvKey | Sum,
+        value: int | float | KvU64 | None = None,
+        limit_min: int | float | None = None,
+        limit_max: int | float | None = None,
+        limit_exceeded: LimitExceededInput | None = None,
+        limit: Limit | None = None,
+    ) -> Self:
+        if isinstance(key, Sum):
+            if value is not None:
+                raise TypeError("sum() takes no arguments after 'sum'")
+            return self.mutate(key)
+
+        if value is None:
+            raise TypeError("sum() missing 1 required positional argument: 'value'")
+        if limit is None:
+            if not (limit_min is None and limit_max is None and limit_exceeded is None):
+                limit = Limit(
+                    min=limit_min, max=limit_max, limit_exceeded=limit_exceeded
+                )
+        else:
+            limit_min = limit.min if limit_min is None else limit_min
+            limit_max = limit.max if limit_max is None else limit_max
+            limit_exceeded = (
+                cast(LimitExceededInput, limit.limit_exceeded)
+                if limit_exceeded is None
+                else limit_exceeded
+            )
+            limit = Limit(limit_min, limit_max, limit_exceeded)
+
+        return self.mutate(Sum(key, value, limit=limit))
+
+    def min(self, key: AnyKvKey, value: int | float | KvU64) -> Self:
+        return self.mutate(Min(key, value))
+
+    def max(self, key: AnyKvKey, value: int | float | KvU64) -> Self:
+        return self.mutate(Max(key, value))
+
+    def delete(self, key: AnyKvKey) -> Self:
+        return self.mutate(Delete(key))
+
+    def mutate(self, mutation: Mutation) -> Self:
+        self.mutations.append(mutation)
+        return self
+
+    @overload
+    def enqueue(self, enqueue: Enqueue, /) -> Self: ...
+    @overload
+    def enqueue(
+        self,
+        message: object,
+        *,
+        delivery_time: datetime | None = None,
+        retry_delays: Backoff | None = None,
+        dead_letter_keys: Sequence[AnyKvKey] | None = None,
+    ) -> Self: ...
+    def enqueue(
+        self,
+        message: object | Enqueue,
+        *,
+        delivery_time: datetime | None = None,
+        retry_delays: Backoff | None = None,
+        dead_letter_keys: Sequence[AnyKvKey] | None = None,
+    ) -> Self:
+        if isinstance(message, Enqueue):
+            enqueue = message
+        else:
+            enqueue = Enqueue(
+                message,
+                delivery_time=delivery_time,
+                retry_delays=retry_delays,
+                dead_letter_keys=dead_letter_keys,
+            )
+        self.enqueues.append(enqueue)
+        return self
+
+
+@dataclass(init=False, **slots_if310())
+class ConflictedWrite(FrozenAfterInitDataclass):
+    applied: Literal[False]
+    conflicts: Mapping[AnyKvKey, Check]
+    versionstamp: None
+    checks: Sequence[Check]
+    mutations: Sequence[Mutation]
+    enqueues: Sequence[Enqueue]
+
+    def __init__(
+        self,
+        failed_checks: Sequence[int],
+        checks: Sequence[Check],
+        mutations: Sequence[Mutation],
+        enqueues: Sequence[Enqueue],
+    ) -> None:
+        self.applied = False
+        try:
+            self.conflicts = MappingProxyType(
+                {checks[i].key: checks[i] for i in failed_checks}
+            )
+        except IndexError as e:
+            raise ValueError("failed_checks contains out-of-bounds index") from e
+        self.versionstamp = None
+        self.checks = tuple(checks)
+        self.mutations = tuple(mutations)
+        self.enqueues = tuple(enqueues)
+
+
+@dataclass(init=False, **slots_if310())
+class AppliedWrite(FrozenAfterInitDataclass):
+    applied: Literal[True]
+    conflicts: Mapping[KvKey, Check]  # empty
+    versionstamp: VersionStamp
+    checks: Sequence[Check]
+    mutations: Sequence[Mutation]
+    enqueues: Sequence[Enqueue]
+
+    def __init__(
+        self,
+        versionstamp: VersionStamp,
+        checks: Sequence[Check],
+        mutations: Sequence[Mutation],
+        enqueues: Sequence[Enqueue],
+    ) -> None:
+        self.applied = True
+        self.conflicts = MappingProxyType({})
+        self.versionstamp = versionstamp
+        self.checks = tuple(checks)
+        self.mutations = tuple(mutations)
+        self.enqueues = tuple(enqueues)
+
+
+CompletedWrite: TypeAlias = Union[AppliedWrite, ConflictedWrite]
+
+
+def is_applied(write: CompletedWrite) -> TypeIs[AppliedWrite]:
+    return isinstance(write, AppliedWrite)
+
+
+@runtime_checkable
+class AnyKeyVersion(Protocol):
+    @property
+    def key(self) -> AnyKvKey: ...
+    @property
+    def versionstamp(self) -> VersionStamp: ...
+
+
+@dataclass(frozen=True, **slots_if310())
+class Check(AnyKeyVersion):
+    key: AnyKvKey
+    versionstamp: VersionStamp
+
+
+@dataclass(init=False, **slots_if310())
+class Mutation(FrozenAfterInitDataclass, ABC):
+    key: AnyKvKey
+
+    def __init__(self, key: AnyKvKey) -> None:
+        if type(self) is Mutation:
+            raise TypeError("cannot create Mutation instances directly")
+        self.key = key
+
+
+@dataclass(init=False, **slots_if310())
+class Set(Mutation):
+    value: object
+    versioned: bool
+
+    def __init__(
+        self, key: AnyKvKey, value: object, *, versioned: bool = False
+    ) -> None:
+        super().__init__(key)
+        self.value = value
+        self.versioned = versioned
+
+
+class LimitExceededPolicy(EvalEnumRepr, Enum):
+    ERROR = "error"
+    CLAMP = "clamp"
+    WRAP = "wrap"
+
+
+LimitExceededInput = Literal[
+    "error",
+    "clamp",
+    LimitExceededPolicy.ERROR,
+    LimitExceededPolicy.CLAMP,
+]
+
+
+@dataclass(init=False, frozen=True, **slots_if310())
+class Limit(Container["int | float"]):
+    """
+    A range of numbers used to define the allowed range of Add operations.
+
+    Examples
+    --------
+    >>> lim = Limit(0, 100, limit_exceeded='clamp')
+    >>> lim
+    Limit(min=0, max=100, limit_exceeded=LimitExceededPolicy.CLAMP)
+    >>> -10 in lim
+    False
+    >>> 110 in lim
+    False
+    >>> 10 in lim
+    True
+    >>> 9000 in Limit(min=0)
+    True
+    """
+
+    min: int | float | None
+    max: int | float | None
+    limit_exceeded: LimitExceededPolicy
+
+    def __init__(
+        self,
+        min: int | float | None = None,
+        max: int | float | None = None,
+        limit_exceeded: LimitExceededInput | None = LimitExceededPolicy.ERROR,
+    ) -> None:
+        object.__setattr__(self, "min", min)
+        object.__setattr__(self, "max", max)
+        object.__setattr__(
+            self,
+            "limit_exceeded",
+            LimitExceededPolicy(limit_exceeded or LimitExceededPolicy.ERROR),
+        )
+
+    def __contains__(self, x: object) -> bool:
+        if not isinstance(x, (int, float)):
+            return False
+        return (self.min is None or self.min <= x) and (
+            self.max is None or self.max >= x
+        )
+
+
+LIMIT_KVU64 = Limit(
+    min=0,
+    max=2**64 - 1,
+    # Not normally allowed by types because only LIMIT_KVU64 can use WRAP.
+    limit_exceeded=cast(LimitExceededInput, LimitExceededPolicy.WRAP),
+)
+LIMIT_UNLIMITED = Limit()
+
+
+@dataclass(init=False, **slots_if310())
+class Sum(Mutation):
+    value: int | float | KvU64
+    limit: Limit = field(default=Limit())
+
+    def __init__(
+        self, key: AnyKvKey, value: int | float | KvU64, *, limit: Limit | None = None
+    ) -> None:
+        super().__init__(key)
+
+        # Only KvU64 supports wrapping on boundary (and this can't be changed).
+        if isinstance(value, KvU64):
+            if limit is not None and limit != LIMIT_KVU64:
+                raise ValueError(
+                    "limit for KvU64 cannot be changed, it must be None or LIMIT_KVU64"
+                )
+            limit = LIMIT_KVU64
+        else:
+            if limit is None:
+                limit = LIMIT_UNLIMITED
+            elif limit.limit_exceeded == LimitExceededPolicy.WRAP:
+                raise ValueError(
+                    "limit for JavaScript BigInt or Number cannot be WRAP, it "
+                    "must be ERROR or CLAMP"
+                )
+        assert limit is not None
+
+        self.value = value
+        self.limit = limit
+
+
+@dataclass(**slots_if310())
+class Min(Mutation):
+    value: int | float | KvU64
+
+    def __init__(self, key: AnyKvKey, value: int | float | KvU64) -> None:
+        super().__init__(key)
+        self.value = value
+
+
+@dataclass(**slots_if310())
+class Max(Mutation):
+    value: int | float | KvU64
+
+    def __init__(self, key: AnyKvKey, value: int | float | KvU64) -> None:
+        super().__init__(key)
+        self.value = value
+
+
+@dataclass(**slots_if310())
+class Delete(Mutation):
+    pass
+
+
+DEFAULT_ENQUEUE_RETRY_DELAYS = ExponentialBackoff(
+    initial_interval_seconds=1, multiplier=3
+)
+
+
+@dataclass(init=False, **slots_if310())
+class Enqueue(FrozenAfterInitDataclass):
+    """
+    A message to be async-delivered to a Deno app listening to the Kv's queue.
+
+    Parameters
+    ----------
+    message:
+        The message to deliver. Can be any value that can be written to the database.
+    delivery_time:
+        Delay the message delivery until this time.
+
+        If the time is None or in the past, the message is delivered as soon as
+        possible.
+    retry_delays:
+        Delivery attempts that fail will be retried after these delays.
+
+        If the value is an Iterable, a fixed number of values will be drawn to retry
+        with. Use a fixed-length Sequence to specify a precise number of retries.
+        Default: DEFAULT_ENQUEUE_RETRY_DELAYS
+    dead_letter_keys:
+        Messages that cannot be delivered will be written to these keys.
+
+    Notes
+    -----
+    See [Deno.Kv.listenQueue()](https://docs.deno.com/api/deno/~/Deno.Kv#method_listenqueue_0)
+    """
+
+    message: object
+    delivery_time: datetime | None
+    retry_delays: Backoff
+    dead_letter_keys: Sequence[AnyKvKey]
+
+    def __init__(
+        self,
+        message: object,
+        *,
+        delivery_time: datetime | None = None,
+        retry_delays: Backoff | None = None,
+        dead_letter_keys: Sequence[AnyKvKey] | None = None,
+    ):
+        self.message = message
+        self.delivery_time = delivery_time
+        self.retry_delays = (
+            DEFAULT_ENQUEUE_RETRY_DELAYS if retry_delays is None else retry_delays
+        )
+        self.dead_letter_keys = () if dead_letter_keys is None else dead_letter_keys
 
 
 async def open_kv(

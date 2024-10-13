@@ -10,7 +10,9 @@ from itertools import repeat
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import AsyncGenerator
+from typing import Awaitable
 from typing import Callable
+from typing import Literal
 from typing import Mapping
 from typing import cast
 from unittest.mock import AsyncMock
@@ -22,6 +24,8 @@ import aiohttp
 import pytest
 import pytest_asyncio
 import v8serialize
+from aiohttp import web
+from aiohttp.test_utils import TestClient as _TestClient
 from fdb.tuple import unpack
 from hypothesis import HealthCheck
 from hypothesis import given
@@ -84,12 +88,15 @@ from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
 from test.denokv_testing import assume_ok
 from test.denokv_testing import mk_db_meta
+from test.denokv_testing import mock_db_api
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 
 if TYPE_CHECKING:
     from typing import Generator
 
     from typing_extensions import TypeAlias
+
+TestClient: TypeAlias = _TestClient[web.Request, web.Application]
 
 pytest_mark_asyncio = pytest.mark.asyncio()
 
@@ -348,21 +355,38 @@ def mock_snapshot_read() -> Generator[Mock]:
 
 
 @pytest.fixture
+def mock_atomic_write() -> Generator[Mock]:
+    mock = AsyncMock(side_effect=NotImplementedError)
+    with patch("denokv.datapath.atomic_write", mock) as mock:
+        yield mock
+
+
+@pytest.fixture
 def retry_delays() -> Backoff:
     return ()
 
 
-@pytest_asyncio.fixture
-async def client_session() -> AsyncGenerator[aiohttp.ClientSession]:
-    async with aiohttp.ClientSession() as cs:
-        yield cs
+@pytest.fixture
+def client_session(client: TestClient) -> aiohttp.ClientSession:
+    return client.session
+
+
+@pytest.fixture(params=[1, 2, 3])
+def datapath_version(request: pytest.FixtureRequest) -> Literal[1, 2, 3]:
+    assert request.param in (1, 2, 3)
+    return cast(Literal[1, 2, 3], request.param)
 
 
 @pytest.fixture
-def meta() -> DatabaseMetadata:
-    return mk_db_meta(
-        [EndpointInfo(URL("https://example.com/"), ConsistencyLevel.STRONG)]
-    )
+def datapath_endpoint_url(
+    client: TestClient, datapath_version: Literal[1, 2, 3]
+) -> URL:
+    return client.make_url(f"/v{datapath_version}/consistency/strong/")
+
+
+@pytest.fixture
+def meta(datapath_endpoint_url: URL) -> DatabaseMetadata:
+    return mk_db_meta([EndpointInfo(datapath_endpoint_url, ConsistencyLevel.STRONG)])
 
 
 @pytest.fixture
@@ -384,7 +408,25 @@ def kv_flags() -> KvFlags:
 
 
 @pytest.fixture
-def create_db(
+def mock_db() -> MockKvDb:
+    return MockKvDb()
+
+
+@pytest.fixture
+def db_api(mock_db: MockKvDb) -> web.Application:
+    return mock_db_api(mock_db)
+
+
+@pytest_asyncio.fixture
+async def client(
+    db_api: web.Application,
+    aiohttp_client: Callable[[web.Application], Awaitable[TestClient]],
+) -> TestClient:
+    return await aiohttp_client(db_api)
+
+
+@pytest.fixture
+def create_kv(
     client_session: aiohttp.ClientSession,
     auth_fn: AuthenticatorFn,
     retry_delays: Backoff,
@@ -402,8 +444,8 @@ def create_db(
 
 
 @pytest.fixture
-def db(create_db: partial[Kv]) -> Kv:
-    return create_db()
+def kv(create_kv: partial[Kv]) -> Kv:
+    return create_kv()
 
 
 def pack_kv_entry(
@@ -419,19 +461,19 @@ def pack_kv_entry(
 
 @pytest_mark_asyncio
 async def test_Kv_get__rejects_invalid_arguments(
-    db: Kv, mock_snapshot_read: AsyncMock
+    kv: Kv, mock_snapshot_read: AsyncMock
 ) -> None:
     with pytest.raises(
         TypeError, match=r"cannot use positional keys and keys keyword argument"
     ):
-        await db.get(("a", 1), keys=[("a", 2)])  # type: ignore[call-overload]
+        await kv.get(("a", 1), keys=[("a", 2)])  # type: ignore[call-overload]
     with pytest.raises(TypeError, match=r"at least one key argument must be passed"):
-        await db.get()  # type: ignore[call-overload]
+        await kv.get()  # type: ignore[call-overload]
 
 
 @pytest_mark_asyncio
 async def test_Kv_get__returns_single_value_for_single_key(
-    db: Kv, mock_snapshot_read: AsyncMock
+    kv: Kv, mock_snapshot_read: AsyncMock
 ) -> None:
     read_output = SnapshotReadOutput(
         ranges=[ReadRangeOutput(values=[pack_kv_entry(("a", 1), b"x")])],
@@ -443,7 +485,7 @@ async def test_Kv_get__returns_single_value_for_single_key(
     mock_snapshot_read.side_effect = None
     mock_snapshot_read.return_value = Ok(read_output)
 
-    k, kval = await db.get(("a", 1))
+    k, kval = await kv.get(("a", 1))
 
     assert k == ("a", 1)
     assert kval is not None
@@ -461,7 +503,7 @@ class ArgKind(StrEnum):
 @pytest.mark.parametrize("arg_kind", ArgKind)
 @pytest_mark_asyncio
 async def test_Kv_get__returns_n_values_for_n_keys(
-    n: int, arg_kind: ArgKind, db: Kv, mock_snapshot_read: AsyncMock
+    n: int, arg_kind: ArgKind, kv: Kv, mock_snapshot_read: AsyncMock
 ) -> None:
     read_output = SnapshotReadOutput(
         ranges=[
@@ -481,9 +523,9 @@ async def test_Kv_get__returns_n_values_for_n_keys(
     mock_snapshot_read.return_value = Ok(read_output)
 
     if arg_kind is ArgKind.KWARGS:
-        values = await db.get(keys=[("i", i) for i in range(n)])
+        values = await kv.get(keys=[("i", i) for i in range(n)])
     else:
-        values = await db.get(*[("i", i) for i in range(n)])
+        values = await kv.get(*[("i", i) for i in range(n)])
 
     assert isinstance(values, tuple)
     assert len(values) == n
@@ -503,7 +545,7 @@ async def test_Kv_get__returns_n_values_for_n_keys(
 )
 @pytest_mark_asyncio
 async def test_Kv_get__treats_int_as_float_when_IntAsNumber_enabled(
-    db: Kv, mock_snapshot_read: AsyncMock, int_type: type
+    kv: Kv, mock_snapshot_read: AsyncMock, int_type: type
 ) -> None:
     read_output = SnapshotReadOutput(
         ranges=[ReadRangeOutput(values=[pack_kv_entry(("a", int_type(1)), b"x")])],
@@ -515,7 +557,7 @@ async def test_Kv_get__treats_int_as_float_when_IntAsNumber_enabled(
     mock_snapshot_read.side_effect = None
     mock_snapshot_read.return_value = Ok(read_output)
 
-    k, kval = await db.get(("a", 1))
+    k, kval = await kv.get(("a", 1))
 
     assert k == ("a", 1)  # 1 == 1.0
     assert type(k[1]) is int_type
@@ -574,14 +616,14 @@ meta_backoff_retryable_errors = retryable_errors(
 @given(data=st.data(), retry_delays=st.sampled_from([[], [1.0], [1.0, 2.0, 4.0]]))
 @pytest_mark_asyncio
 async def test_Kv_get__retries_retryable_snapshot_read_errors(
-    create_db: partial[Kv],
+    create_kv: partial[Kv],
     meta: DatabaseMetadata,
     mock_snapshot_read: AsyncMock,
     data: st.DataObject,
     retry_delays: Backoff,
 ) -> None:
     auth_fn = AsyncMock(name="auth_fn", return_value=Ok(meta))
-    db = create_db(retry=retry_delays, auth=auth_fn)
+    db = create_kv(retry=retry_delays, auth=auth_fn)
     retry_errors: list[DataPathError] = []
 
     def fail_with_retryable_error(*args: Any, **kwargs: Any) -> Err[DenoKvError]:
@@ -618,17 +660,17 @@ async def test_Kv_get__retries_retryable_snapshot_read_errors(
 
 
 @pytest_mark_asyncio
-async def test_Kv_list__rejects_invalid_arguments(db: Kv) -> None:
+async def test_Kv_list__rejects_invalid_arguments(kv: Kv) -> None:
     with pytest.raises(ValueError, match=r"limit cannot be negative"):
-        async for _ in db.list(limit=-1):
+        async for _ in kv.list(limit=-1):
             raise AssertionError("should not generate values")
 
     with pytest.raises(ValueError, match=r"batch_size cannot be < 1"):
-        async for _ in db.list(batch_size=0):
+        async for _ in kv.list(batch_size=0):
             raise AssertionError("should not generate values")
 
     with pytest.raises(InvalidCursor, match=r"cursor is not valid URL-safe base64"):
-        async for _ in db.list(cursor="x"):
+        async for _ in kv.list(cursor="x"):
             raise AssertionError("should not generate values")
 
 
@@ -647,12 +689,12 @@ def pack_example_cursor(key: KvKeyTuple) -> str:
 )
 @pytest_mark_asyncio
 async def test_Kv_list__rejects_cursor_outside_listed_range(
-    db: Kv, range_options: KvListOptions, cursor_key: KvKeyTuple
+    kv: Kv, range_options: KvListOptions, cursor_key: KvKeyTuple
 ) -> None:
     with pytest.raises(
         InvalidCursor, match=r"cursor is not within the the start and end key range"
     ):
-        async for _ in db.list(
+        async for _ in kv.list(
             **KvListOptions(
                 **range_options,
                 cursor_format_type=ExampleCursorFormat,
@@ -660,11 +702,6 @@ async def test_Kv_list__rejects_cursor_outside_listed_range(
             )
         ):
             raise AssertionError("should not generate values")
-
-
-@pytest.fixture
-def mock_db() -> MockKvDb:
-    return MockKvDb()
 
 
 @pytest.fixture
@@ -755,7 +792,7 @@ def list_example_cursors(
 @pytest_mark_asyncio
 async def test_Kv_list__generates_values_from_sequential_snapshot_reads(
     data: st.DataObject,
-    db: Kv,
+    kv: Kv,
     mock_snapshot_read_to_return_mock_db_results: Callable[[], AsyncMock],
     mock_db: MockKvDb,
     list_example_entries: Mapping[KvKeyTuple, object],
@@ -804,7 +841,7 @@ async def test_Kv_list__generates_values_from_sequential_snapshot_reads(
     ]
 
     results: list[tuple[KvKeyTuple, object, VersionStamp]] = []
-    async for kv_entry in db.list(
+    async for kv_entry in kv.list(
         prefix=prefix,
         start=start,
         end=end,
@@ -843,7 +880,7 @@ async def test_Kv_list__generates_values_from_sequential_snapshot_reads(
 
 @pytest_mark_asyncio
 async def test_Kv_list__retries_retryable_snapshot_read_errors(
-    create_db: partial[Kv],
+    create_kv: partial[Kv],
     meta: DatabaseMetadata,
     mock_snapshot_read: AsyncMock,
     # mock_snapshot_read_to_return_mock_db_results: Callable[[], AsyncMock],
@@ -851,7 +888,7 @@ async def test_Kv_list__retries_retryable_snapshot_read_errors(
     # list_example_entries: Mapping[KvKeyTuple, object],
 ) -> None:
     auth_fn = AsyncMock(name="auth_fn", return_value=Ok(meta))
-    db = create_db(retry=repeat(0), auth=auth_fn)
+    db = create_kv(retry=repeat(0), auth=auth_fn)
 
     auth_fn.side_effect = [
         Err(MetadataExchangeDenoKvError("Failed", retryable=True)),

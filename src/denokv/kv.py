@@ -15,6 +15,7 @@ from typing import Literal
 from typing import overload
 
 import aiohttp
+import v8serialize
 from fdb.tuple import unpack
 from v8serialize import Decoder
 from yarl import URL
@@ -79,6 +80,38 @@ Pieces = TypeVarTuple("Pieces", default=Unpack[tuple[KvKeyPiece, ...]])
 SAFE_FLOAT_INT_RANGE: Final = range(-(2**53 - 1), 2**53)  # 2**53 - 1 is max safe
 
 CursorFormatType: TypeAlias = Callable[["ListContext"], "AnyCursorFormat"]
+
+
+def v8_encode_int_as_bigint(
+    value: object,
+    ctx: v8serialize.encode.EncodeContext,
+    next: v8serialize.encode.EncodeNextFn,
+) -> None:
+    if isinstance(value, int):
+        ctx.stream.write_bigint(value)
+    else:
+        next(value)
+
+
+# TODO: add an explicit tagged JSBigInt type to v8serialize
+def create_default_v8_encoder() -> v8serialize.Encoder:
+    """
+    Create a new V8-serialization format Encoder.
+
+    This encoder always encodes int as JavaScript BigInt. We use this by default
+    for Kv instances to ensure consistent handling of int and float types.
+
+    Notes
+    -----
+    In contrast, the `v8serialize` default encoder encodes int as Number when it
+    fits in the +/- 2**53 - 1 range which float64 can represent exactly. This
+    results in differing number representation for different number sizes, which
+    is likely to be a footgun in the context of the Sum/Min/Max write
+    operations.
+    """
+    return v8serialize.Encoder(
+        encode_steps=[v8_encode_int_as_bigint, *v8serialize.default_encode_steps]
+    )
 
 
 class KvListOptions(TypedDict, total=False):

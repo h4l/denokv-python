@@ -3,10 +3,7 @@ from __future__ import annotations
 import functools
 import re
 import struct
-from datetime import datetime
-from datetime import timedelta
 from typing import Literal
-from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -43,14 +40,12 @@ from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
 from denokv._pycompat.typing import Awaitable
 from denokv._pycompat.typing import Callable
-from denokv._pycompat.typing import Final
 from denokv._pycompat.typing import Mapping
 from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import TypeAlias
 from denokv._pycompat.typing import TypeVar
 from denokv._pycompat.typing import cast
 from denokv.auth import ConsistencyLevel
-from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo
 from denokv.datapath import KV_KEY_PIECE_TYPES
 from denokv.datapath import AutoRetry
@@ -80,7 +75,8 @@ from denokv.result import Result
 from denokv.result import is_ok
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
-from test.denokv_testing import make_database_metadata_for_endpoint
+from test.denokv_testing import make_database_metadata
+from test.denokv_testing import meta_endpoint
 from test.denokv_testing import mock_db_api
 from test.denokv_testing import nextafter
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
@@ -407,7 +403,7 @@ async def test_datapath_request_function__handles_network_error(
     server_url = client.make_url("/")
     server_url = server_url.with_port(unused_tcp_port_factory())
 
-    meta, endpoint = make_database_metadata_for_endpoint(endpoint_url=server_url)
+    meta, endpoint = meta_endpoint(make_database_metadata(endpoints=server_url))
 
     # will fail to connect to URL with nothing listening on the port
     result = await datapath_request_fn(
@@ -554,7 +550,7 @@ async def test_snapshot_read__handles_unsuccessful_responses(
     mk_error: Callable[[EndpointInfo], DataPathDenoKvError],
 ) -> None:
     server_url = client.make_url(path)
-    meta, endpoint = make_database_metadata_for_endpoint(endpoint_url=server_url)
+    meta, endpoint = meta_endpoint(make_database_metadata(endpoints=server_url))
     error = mk_error(endpoint)
     assert isinstance(error, DataPathDenoKvError)
     read = SnapshotRead(ranges=[])
@@ -683,8 +679,8 @@ async def test_snapshot_read__reads_expected_values(
     version: Literal[1, 2, 3],
 ) -> None:
     server_url = client.make_url(f"/v{version}/consistency/strong/")
-    meta, endpoint = make_database_metadata_for_endpoint(
-        endpoint_url=server_url, version=version
+    meta, endpoint = meta_endpoint(
+        make_database_metadata(endpoints=server_url, version=version)
     )
     ver = add_entries(mock_db, example_entries)
 
@@ -714,8 +710,10 @@ async def test_atomic_write__raises_when_given_endpoint_without_strong_consisten
     client: TestClient,
 ) -> None:
     # this is considered an avoidable programmer error, so it raises
-    meta, eventual_endpoint = make_database_metadata_for_endpoint(
-        URL("https://example/"), endpoint_consistency=ConsistencyLevel.EVENTUAL
+    meta, eventual_endpoint = meta_endpoint(
+        make_database_metadata(
+            URL("https://example/"), endpoint_consistency=ConsistencyLevel.EVENTUAL
+        )
     )
     with pytest.raises(
         ValueError,
@@ -825,7 +823,7 @@ async def test_atomic_write__handles_unsuccessful_responses(
     mk_error: Callable[[EndpointInfo], DataPathDenoKvError],
 ) -> None:
     server_url = client.make_url(path)
-    meta, endpoint = make_database_metadata_for_endpoint(endpoint_url=server_url)
+    meta, endpoint = meta_endpoint(make_database_metadata(endpoints=server_url))
     error = mk_error(endpoint)
     assert isinstance(error, DataPathDenoKvError)
 
@@ -910,8 +908,8 @@ async def test_atomic_write__writes_expected_values(
     version: Literal[1, 2, 3],
 ) -> None:
     server_url = client.make_url(f"/v{version}/consistency/strong/")
-    meta, endpoint = make_database_metadata_for_endpoint(
-        endpoint_url=server_url, version=version
+    meta, endpoint = meta_endpoint(
+        make_database_metadata(endpoints=server_url, version=version)
     )
     add_entries(mock_db, example_entries_write)
 

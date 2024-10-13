@@ -30,6 +30,7 @@ from typing import Iterable
 from typing import Literal
 from typing import Mapping
 from typing import MutableSequence
+from typing import Never
 from typing import Protocol
 from typing import Sequence
 from typing import TypedDict
@@ -83,6 +84,8 @@ from denokv.datapath import read_range_multi
 from denokv.datapath import read_range_single
 from denokv.errors import InvalidCursor
 from denokv.kv_keys import KvKey
+from denokv.result import AnyFailure
+from denokv.result import AnySuccess
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
@@ -463,7 +466,11 @@ class PlannedWrite:
 
 
 @dataclass(init=False, **slots_if310())
-class ConflictedWrite(FrozenAfterInitDataclass):
+class ConflictedWrite(FrozenAfterInitDataclass, AnyFailure):
+    if TYPE_CHECKING:
+
+        def _AnyFailure_marker(self, no_call: Never) -> Never: ...
+
     ok: Literal[False]
     conflicts: Mapping[AnyKvKey, Check]
     versionstamp: None
@@ -492,7 +499,11 @@ class ConflictedWrite(FrozenAfterInitDataclass):
 
 
 @dataclass(init=False, **slots_if310())
-class CommittedWrite(FrozenAfterInitDataclass):
+class CommittedWrite(FrozenAfterInitDataclass, AnySuccess):
+    if TYPE_CHECKING:
+
+        def _AnySuccess_marker(self, no_call: Never) -> Never: ...
+
     ok: Literal[True]
     conflicts: Mapping[KvKey, Check]  # empty
     versionstamp: VersionStamp

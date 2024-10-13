@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from typing import Iterable
 from typing import Sequence
 
 import pytest
+from typing_extensions import Never
 
+from denokv.result import AnyFailure
+from denokv.result import AnySuccess
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
@@ -99,3 +103,38 @@ def test_error_covariance() -> None:
     assert is_err(result)
     assert isinstance(result.error, ValueError) and str(result.error) == "foo"
     use_error(result)
+
+
+@AnySuccess.register
+class Yes:
+    if TYPE_CHECKING:
+
+        def _AnySuccess_marker(self, no_call: Never) -> Never: ...
+
+    bar: str
+
+
+@AnyFailure.register
+class No:
+    if TYPE_CHECKING:
+
+        def _AnyFailure_marker(self, no_call: Never) -> Never: ...
+
+    foo: int
+
+
+@pytest.mark.parametrize("maybe", [True, False])
+def test_arbitrary_type_registration(maybe: bool) -> None:
+    def use_yes(x: Yes) -> None:
+        assert isinstance(x, Yes)
+
+    def use_no(x: No) -> None:
+        assert isinstance(x, No)
+
+    thing: Yes | No = Yes() if maybe else No()
+    if maybe:
+        assert is_ok(thing)
+        use_yes(thing)
+    else:
+        assert is_err(thing)
+        use_no(thing)

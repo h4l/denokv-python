@@ -7,7 +7,6 @@ from datetime import datetime
 from datetime import timedelta
 from typing import Awaitable
 from typing import Callable
-from typing import Final
 from typing import Literal
 from typing import Mapping
 from typing import Sequence
@@ -78,6 +77,7 @@ from denokv.result import Result
 from denokv.result import is_ok
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
+from test.denokv_testing import mock_db_api
 from test.denokv_testing import nextafter
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 from test.denokv_testing import v8_bigint_encoder
@@ -111,92 +111,7 @@ def example_entries() -> Mapping[KvKeyTuple, object]:
 
 @pytest.fixture
 def db_api(mock_db: MockKvDb) -> web.Application:
-    def get_server_version(request: web.Request) -> Literal[1, 2, 3]:
-        match = re.match(r"^/v([123])/", request.path)
-        version: Final = int(match.group(1)) if match else -1
-        if version not in (1, 2, 3):
-            raise AssertionError("handler is not registered at /v[123]/ URL path")
-        return cast(Literal[1, 2, 3], version)
-
-    def validate_request(request: web.Request) -> None:
-        server_version = get_server_version(request)
-
-        if request.method != "POST":
-            raise web.HTTPBadRequest(body="method must be POST")
-        if request.content_type != "application/x-protobuf":
-            raise web.HTTPBadRequest(body="content-type must be application/x-protobuf")
-
-        db_id_header = (
-            "x-transaction-domain-id" if server_version == 1 else "x-denokv-database-id"
-        )
-        try:
-            UUID(request.headers.get(db_id_header, ""))
-        except Exception:
-            raise web.HTTPBadRequest(
-                body=f"client did not set a valid {db_id_header} when talking to a "
-                f"v{server_version} server"
-            ) from None
-
-        if server_version > 2:
-            try:
-                client_version = int(request.headers.get("x-denokv-version", ""))
-                if client_version not in (2, 3):
-                    raise ValueError(f"invalid client_version: {client_version}")
-            except Exception:
-                raise web.HTTPBadRequest(
-                    body=f"client did not set a valid x-denokv-version header when "
-                    f"talking to a v{server_version} server"
-                ) from None
-
-    def parse_protobuf_body(
-        body_bytes: bytes, message_type: type[MessageT]
-    ) -> MessageT:
-        message = message_type()
-        try:
-            count = message.ParseFromString(body_bytes)
-            if len(body_bytes) != count:
-                raise ValueError(
-                    f"{len(body_bytes) - count} trailing bytes after "
-                    f"{message_type.__name__}"
-                )
-        except Exception as e:
-            raise web.HTTPBadRequest(
-                body=f"body is not a valid {message_type.__name__} message: {e}"
-            ) from e
-        return message
-
-    # Valid snapshot_read handler
-    async def strong_snapshot_read(request: web.Request) -> web.Response:
-        validate_request(request)
-        read = parse_protobuf_body(await request.read(), SnapshotRead)
-
-        read_result = SnapshotReadOutput(
-            status=SnapshotReadStatus.SR_SUCCESS,
-            read_is_strongly_consistent=True,
-            ranges=[mock_db.snapshot_read_range(r) for r in read.ranges],
-        )
-        return web.Response(
-            status=200,
-            content_type="application/x-protobuf",
-            body=read_result.SerializeToString(),
-        )
-
-    # Valid atomic_write handler
-    async def atomic_write(request: web.Request) -> web.Response:
-        validate_request(request)
-
-        write = parse_protobuf_body(await request.read(), AtomicWrite)
-
-        try:
-            write_result = mock_db.atomic_write(write)
-        except ValueError as e:
-            raise web.HTTPBadRequest(body=f"SnapshotWrite is not valid: {e}") from e
-
-        return web.Response(
-            status=200,
-            content_type="application/x-protobuf",
-            body=write_result.SerializeToString(),
-        )
+    """HTTP endpoints backed by a MockKvDb, plus various misbehaving endpoints."""
 
     # Generic Data Path errors
     async def violation_2xx_text_body(request: web.Request) -> web.Response:
@@ -396,7 +311,7 @@ def db_api(mock_db: MockKvDb) -> web.Application:
         for req_kind in _DataPathRequestKind:
             app.router.add_post(f"{path}/{req_kind.value}", handler)
 
-    app = web.Application()
+    app = mock_db_api(mock_db)
 
     # Generic error endpoints
     add_datapath_post(app, "/violation_2xx_text_body", violation_2xx_text_body)
@@ -457,13 +372,6 @@ def db_api(mock_db: MockKvDb) -> web.Application:
         "/invalid_status/atomic_write", violation_atomic_write_invalid_status
     )
 
-    # Working endpoints
-    app.router.add_post("/v1/consistency/strong/snapshot_read", strong_snapshot_read)
-    app.router.add_post("/v2/consistency/strong/snapshot_read", strong_snapshot_read)
-    app.router.add_post("/v3/consistency/strong/snapshot_read", strong_snapshot_read)
-    app.router.add_post("/v1/consistency/strong/atomic_write", atomic_write)
-    app.router.add_post("/v2/consistency/strong/atomic_write", atomic_write)
-    app.router.add_post("/v3/consistency/strong/atomic_write", atomic_write)
     return app
 
 

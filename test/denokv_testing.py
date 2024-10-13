@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 import sys
 from base64 import b16decode
 from base64 import b16encode
@@ -10,13 +11,16 @@ from dataclasses import field
 from datetime import datetime
 from datetime import timedelta
 from itertools import groupby
+from typing import Literal
 from typing import overload
 from uuid import UUID
 
 import v8serialize
 import v8serialize.encode
+from aiohttp import web
 from fdb.tuple import pack
 from fdb.tuple import unpack
+from google.protobuf.message import Message
 
 from denokv._datapath_pb2 import AtomicWrite
 from denokv._datapath_pb2 import AtomicWriteOutput
@@ -28,6 +32,9 @@ from denokv._datapath_pb2 import Mutation
 from denokv._datapath_pb2 import MutationType
 from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import ReadRangeOutput
+from denokv._datapath_pb2 import SnapshotRead
+from denokv._datapath_pb2 import SnapshotReadOutput
+from denokv._datapath_pb2 import SnapshotReadStatus
 from denokv._datapath_pb2 import ValueEncoding
 from denokv._kv_values import KvEntry
 from denokv._kv_values import KvU64
@@ -36,13 +43,16 @@ from denokv._kv_writes import LimitExceededPolicy
 from denokv._pycompat.dataclasses import slots_if310
 from denokv._pycompat.protobuf import enum_name
 from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import Callable
 from denokv._pycompat.typing import ClassVar
+from denokv._pycompat.typing import Final
 from denokv._pycompat.typing import Iterable
 from denokv._pycompat.typing import Mapping
 from denokv._pycompat.typing import NamedTuple
 from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import TypeIs
 from denokv._pycompat.typing import TypeVar
+from denokv._pycompat.typing import cast
 from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo
 from denokv.datapath import AnyKvKey
@@ -65,6 +75,7 @@ from denokv.result import is_ok
 T = TypeVar("T")
 E = TypeVar("E")
 E2 = TypeVar("E2")
+MessageT = TypeVar("MessageT", bound=Message)
 
 v8_decoder = v8serialize.Decoder()
 v8_bigint_encoder = create_default_v8_encoder()
@@ -567,6 +578,108 @@ def decode_enqueue_message(enqueue: Enqueue) -> MockKvDbMessage:
         deadline_ms=enqueue.deadline_ms,
         keys_if_undelivered=keys_if_undelivered,
     )
+
+
+def mock_db_api(mock_db: MockKvDb) -> web.Application:
+    """HTTP endpoints implementing the KV Data Path protocol against MockKvDb."""
+
+    def get_server_version(request: web.Request) -> Literal[1, 2, 3]:
+        match = re.match(r"^/v([123])/", request.path)
+        version: Final = int(match.group(1)) if match else -1
+        if version not in (1, 2, 3):
+            raise AssertionError("handler is not registered at /v[123]/ URL path")
+        return cast(Literal[1, 2, 3], version)
+
+    def validate_request(request: web.Request) -> None:
+        server_version = get_server_version(request)
+
+        if request.method != "POST":
+            raise web.HTTPBadRequest(body="method must be POST")
+        if request.content_type != "application/x-protobuf":
+            raise web.HTTPBadRequest(body="content-type must be application/x-protobuf")
+
+        db_id_header = (
+            "x-transaction-domain-id" if server_version == 1 else "x-denokv-database-id"
+        )
+        try:
+            UUID(request.headers.get(db_id_header, ""))
+        except Exception:
+            raise web.HTTPBadRequest(
+                body=f"client did not set a valid {db_id_header} when talking to a "
+                f"v{server_version} server"
+            ) from None
+
+        if server_version > 2:
+            try:
+                client_version = int(request.headers.get("x-denokv-version", ""))
+                if client_version not in (2, 3):
+                    raise ValueError(f"invalid client_version: {client_version}")
+            except Exception:
+                raise web.HTTPBadRequest(
+                    body=f"client did not set a valid x-denokv-version header when "
+                    f"talking to a v{server_version} server"
+                ) from None
+
+    def parse_protobuf_body(
+        body_bytes: bytes, message_type: type[MessageT]
+    ) -> MessageT:
+        message = message_type()
+        try:
+            count = message.ParseFromString(body_bytes)
+            if len(body_bytes) != count:
+                raise ValueError(
+                    f"{len(body_bytes) - count} trailing bytes after "
+                    f"{message_type.__name__}"
+                )
+        except Exception as e:
+            raise web.HTTPBadRequest(
+                body=f"body is not a valid {message_type.__name__} message: {e}"
+            ) from e
+        return message
+
+    # Valid snapshot_read handler
+    async def strong_snapshot_read(request: web.Request) -> web.Response:
+        validate_request(request)
+        read = parse_protobuf_body(await request.read(), SnapshotRead)
+
+        read_result = SnapshotReadOutput(
+            status=SnapshotReadStatus.SR_SUCCESS,
+            read_is_strongly_consistent=True,
+            ranges=[mock_db.snapshot_read_range(r) for r in read.ranges],
+        )
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=read_result.SerializeToString(),
+        )
+
+    # Valid atomic_write handler
+    async def atomic_write(request: web.Request) -> web.Response:
+        validate_request(request)
+
+        write = parse_protobuf_body(await request.read(), AtomicWrite)
+
+        try:
+            write_result = mock_db.atomic_write(write)
+        except ValueError as e:
+            raise web.HTTPBadRequest(body=f"SnapshotWrite is not valid: {e}") from e
+
+        return web.Response(
+            status=200,
+            content_type="application/x-protobuf",
+            body=write_result.SerializeToString(),
+        )
+
+    app = web.Application()
+
+    # Working endpoints
+    app.router.add_post("/v1/consistency/strong/snapshot_read", strong_snapshot_read)
+    app.router.add_post("/v2/consistency/strong/snapshot_read", strong_snapshot_read)
+    app.router.add_post("/v3/consistency/strong/snapshot_read", strong_snapshot_read)
+    app.router.add_post("/v1/consistency/strong/atomic_write", atomic_write)
+    app.router.add_post("/v2/consistency/strong/atomic_write", atomic_write)
+    app.router.add_post("/v3/consistency/strong/atomic_write", atomic_write)
+    return app
 
 
 def add_entries(

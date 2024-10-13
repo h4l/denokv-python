@@ -684,29 +684,42 @@ def mock_db_api(mock_db: MockKvDb) -> web.Application:
     return app
 
 
-def make_database_metadata_for_endpoint(
-    endpoint_url: URL,
-    endpoint_consistency: ConsistencyLevel = ConsistencyLevel.STRONG,
+def make_database_metadata(
+    endpoints: URL | Sequence[EndpointInfo],
+    *,
+    endpoint_consistency: ConsistencyLevel | None = None,
     version: Literal[1, 2, 3] = 3,
     database_id: UUID | None = None,
     expires_at: datetime | None = None,
     token: str = "hunter2.123",
-) -> tuple[DatabaseMetadata, EndpointInfo]:
+) -> DatabaseMetadata:
+    if isinstance(endpoints, URL):
+        if endpoint_consistency is None:
+            endpoint_consistency = ConsistencyLevel.STRONG
+        endpoints = [EndpointInfo(url=endpoints, consistency=endpoint_consistency)]
+    else:
+        if endpoint_consistency is not None:
+            raise TypeError(
+                "cannot set endpoint_consistency argument wen endpoints is a Sequence"
+            )
+
     if database_id is None:
         database_id = UUID("00000000-0000-0000-0000-000000000000")
     if expires_at is None:
         expires_at = datetime.now() + timedelta(minutes=30)
 
-    endpoint = EndpointInfo(url=endpoint_url, consistency=endpoint_consistency)
-
     meta = DatabaseMetadata(
         version=version,
         database_id=database_id,
-        endpoints=[endpoint],
+        endpoints=endpoints,
         expires_at=expires_at,
         token=token,
     )
-    return meta, endpoint
+    return meta
+
+
+def meta_endpoint(meta: DatabaseMetadata) -> tuple[DatabaseMetadata, EndpointInfo]:
+    return meta, meta.endpoints[0]
 
 
 def add_entries(

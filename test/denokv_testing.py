@@ -594,9 +594,9 @@ def mock_db_api(mock_db: MockKvDb) -> web.Application:
         server_version = get_server_version(request)
 
         if request.method != "POST":
-            raise web.HTTPBadRequest(body="method must be POST")
+            raise web.HTTPBadRequest(text="method must be POST")
         if request.content_type != "application/x-protobuf":
-            raise web.HTTPBadRequest(body="content-type must be application/x-protobuf")
+            raise web.HTTPBadRequest(text="content-type must be application/x-protobuf")
 
         db_id_header = (
             "x-transaction-domain-id" if server_version == 1 else "x-denokv-database-id"
@@ -605,7 +605,7 @@ def mock_db_api(mock_db: MockKvDb) -> web.Application:
             UUID(request.headers.get(db_id_header, ""))
         except Exception:
             raise web.HTTPBadRequest(
-                body=f"client did not set a valid {db_id_header} when talking to a "
+                text=f"client did not set a valid {db_id_header} when talking to a "
                 f"v{server_version} server"
             ) from None
 
@@ -616,7 +616,7 @@ def mock_db_api(mock_db: MockKvDb) -> web.Application:
                     raise ValueError(f"invalid client_version: {client_version}")
             except Exception:
                 raise web.HTTPBadRequest(
-                    body=f"client did not set a valid x-denokv-version header when "
+                    text=f"client did not set a valid x-denokv-version header when "
                     f"talking to a v{server_version} server"
                 ) from None
 
@@ -633,7 +633,7 @@ def mock_db_api(mock_db: MockKvDb) -> web.Application:
                 )
         except Exception as e:
             raise web.HTTPBadRequest(
-                body=f"body is not a valid {message_type.__name__} message: {e}"
+                text=f"body is not a valid {message_type.__name__} message: {e}"
             ) from e
         return message
 
@@ -662,7 +662,7 @@ def mock_db_api(mock_db: MockKvDb) -> web.Application:
         try:
             write_result = mock_db.atomic_write(write)
         except ValueError as e:
-            raise web.HTTPBadRequest(body=f"SnapshotWrite is not valid: {e}") from e
+            raise web.HTTPBadRequest(text=f"SnapshotWrite is not valid: {e}") from e
 
         return web.Response(
             status=200,

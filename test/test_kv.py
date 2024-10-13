@@ -93,7 +93,7 @@ from test.denokv_testing import ExampleCursorFormat
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
 from test.denokv_testing import assume_ok
-from test.denokv_testing import mk_db_meta
+from test.denokv_testing import make_database_metadata
 from test.denokv_testing import mock_db_api
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 
@@ -103,7 +103,7 @@ pytest_mark_asyncio = pytest.mark.asyncio()
 
 
 def test_EndpointSelector__rejects_meta_without_strong_endpoint() -> None:
-    meta_no_strong = mk_db_meta(
+    meta_no_strong = make_database_metadata(
         [
             EndpointInfo(
                 url=URL("https://example.com/eventual/"),
@@ -117,7 +117,7 @@ def test_EndpointSelector__rejects_meta_without_strong_endpoint() -> None:
 
 
 def test_EndpointSelector__single() -> None:
-    meta = mk_db_meta(
+    meta = make_database_metadata(
         [
             endpoint := EndpointInfo(
                 url=URL("https://example.com/"), consistency=ConsistencyLevel.STRONG
@@ -131,7 +131,7 @@ def test_EndpointSelector__single() -> None:
 
 
 def test_EndpointSelector__multi() -> None:
-    meta = mk_db_meta(
+    meta = make_database_metadata(
         [
             endpoint_eventual := EndpointInfo(
                 url=URL("https://example.com/eventual/"),

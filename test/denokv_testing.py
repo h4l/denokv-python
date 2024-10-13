@@ -107,17 +107,6 @@ def assume_err(result: Result[T, E], type: type[E2] | None = None) -> E | E2:
     )
 
 
-def mk_db_meta(endpoints: Sequence[EndpointInfo]) -> DatabaseMetadata:
-    """Create a placeholder DB meta object with the provided endpoints."""
-    return DatabaseMetadata(
-        version=3,
-        database_id=UUID("00000000-0000-0000-0000-000000000000"),
-        expires_at=datetime.now() + timedelta(hours=1),
-        endpoints=[*endpoints],
-        token="secret",
-    )
-
-
 @dataclass(**slots_if310(), frozen=True)
 class KvWriteValue:
     data: bytes

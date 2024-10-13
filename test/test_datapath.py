@@ -80,6 +80,7 @@ from denokv.result import Result
 from denokv.result import is_ok
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
+from test.denokv_testing import make_database_metadata_for_endpoint
 from test.denokv_testing import mock_db_api
 from test.denokv_testing import nextafter
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
@@ -384,31 +385,6 @@ async def client(
     aiohttp_client: Callable[[web.Application], Awaitable[TestClient]],
 ) -> TestClient:
     return await aiohttp_client(db_api)
-
-
-def make_database_metadata_for_endpoint(
-    endpoint_url: URL,
-    endpoint_consistency: ConsistencyLevel = ConsistencyLevel.STRONG,
-    version: Literal[1, 2, 3] = 3,
-    database_id: UUID | None = None,
-    expires_at: datetime | None = None,
-    token: str = "hunter2.123",
-) -> tuple[DatabaseMetadata, EndpointInfo]:
-    if database_id is None:
-        database_id = UUID("00000000-0000-0000-0000-000000000000")
-    if expires_at is None:
-        expires_at = datetime.now() + timedelta(minutes=30)
-
-    endpoint = EndpointInfo(url=endpoint_url, consistency=endpoint_consistency)
-
-    meta = DatabaseMetadata(
-        version=version,
-        database_id=database_id,
-        endpoints=[endpoint],
-        expires_at=expires_at,
-        token=token,
-    )
-    return meta, endpoint
 
 
 @pytest.mark.parametrize(

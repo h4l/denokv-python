@@ -21,6 +21,7 @@ from aiohttp import web
 from fdb.tuple import pack
 from fdb.tuple import unpack
 from google.protobuf.message import Message
+from yarl import URL
 
 from denokv._datapath_pb2 import AtomicWrite
 from denokv._datapath_pb2 import AtomicWriteOutput
@@ -53,6 +54,7 @@ from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import TypeIs
 from denokv._pycompat.typing import TypeVar
 from denokv._pycompat.typing import cast
+from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo
 from denokv.datapath import AnyKvKey
@@ -680,6 +682,31 @@ def mock_db_api(mock_db: MockKvDb) -> web.Application:
     app.router.add_post("/v2/consistency/strong/atomic_write", atomic_write)
     app.router.add_post("/v3/consistency/strong/atomic_write", atomic_write)
     return app
+
+
+def make_database_metadata_for_endpoint(
+    endpoint_url: URL,
+    endpoint_consistency: ConsistencyLevel = ConsistencyLevel.STRONG,
+    version: Literal[1, 2, 3] = 3,
+    database_id: UUID | None = None,
+    expires_at: datetime | None = None,
+    token: str = "hunter2.123",
+) -> tuple[DatabaseMetadata, EndpointInfo]:
+    if database_id is None:
+        database_id = UUID("00000000-0000-0000-0000-000000000000")
+    if expires_at is None:
+        expires_at = datetime.now() + timedelta(minutes=30)
+
+    endpoint = EndpointInfo(url=endpoint_url, consistency=endpoint_consistency)
+
+    meta = DatabaseMetadata(
+        version=version,
+        database_id=database_id,
+        endpoints=[endpoint],
+        expires_at=expires_at,
+        token=token,
+    )
+    return meta, endpoint
 
 
 def add_entries(

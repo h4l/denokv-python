@@ -55,6 +55,7 @@ from denokv.kv import KvU64
 from denokv.kv import LimitExceededPolicy
 from denokv.kv import ListContext
 from denokv.kv import VersionStamp
+from denokv.kv import create_default_v8_encoder
 from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok
@@ -67,26 +68,7 @@ E = TypeVar("E")
 E2 = TypeVar("E2")
 
 v8_decoder = v8serialize.Decoder()
-
-
-def v8_encode_int_as_bigint(
-    value: object,
-    ctx: v8serialize.encode.EncodeContext,
-    next: v8serialize.encode.EncodeNextFn,
-) -> None:
-    if isinstance(value, int):
-        ctx.stream.write_bigint(value)
-    else:
-        next(value)
-
-
-# The default v8serialize encoder encodes int as number when it fits in the
-# +/- 2**53 - 1 range which float64 can represent exactly. We want to encode int
-# as bigint.
-# TODO: add an explicit tagged JSBigInt type to v8serialize
-v8_bigint_encoder = v8serialize.Encoder(
-    encode_steps=[v8_encode_int_as_bigint, *v8serialize.default_encode_steps]
-)
+v8_bigint_encoder = create_default_v8_encoder()
 
 
 def assume_ok(result: Result[T, E]) -> T:
@@ -586,6 +568,8 @@ def decode_enqueue_message(enqueue: Enqueue) -> MockKvDbMessage:
         deadline_ms=enqueue.deadline_ms,
         keys_if_undelivered=keys_if_undelivered,
     )
+
+
 def add_entries(
     db: MockKvDb,
     entries: Mapping[KvKeyTuple, object] | Iterable[tuple[KvKeyTuple, object]],

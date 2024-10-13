@@ -31,6 +31,7 @@ from denokv._pycompat.typing import TYPE_CHECKING
 from denokv._pycompat.typing import Container
 from denokv._pycompat.typing import Mapping
 from denokv._pycompat.typing import MutableSequence
+from denokv._pycompat.typing import Never
 from denokv._pycompat.typing import Protocol
 from denokv._pycompat.typing import Self
 from denokv._pycompat.typing import Sequence
@@ -44,6 +45,8 @@ from denokv.backoff import ExponentialBackoff
 from denokv.datapath import AnyKvKey
 from denokv.datapath import pack_key
 from denokv.kv_keys import KvKey
+from denokv.result import AnyFailure
+from denokv.result import AnySuccess
 
 
 def encode_kv_write_value(value: object, *, v8_encoder: Encoder) -> dp_protobuf.KvValue:
@@ -211,7 +214,11 @@ class PlannedWrite(AtomicWriteRepresentation):
 
 
 @dataclass(init=False, **slots_if310())
-class ConflictedWrite(FrozenAfterInitDataclass):
+class ConflictedWrite(FrozenAfterInitDataclass, AnyFailure):
+    if TYPE_CHECKING:
+
+        def _AnyFailure_marker(self, no_call: Never) -> Never: ...
+
     ok: Literal[False]
     conflicts: Mapping[AnyKvKey, Check]
     versionstamp: None
@@ -240,7 +247,11 @@ class ConflictedWrite(FrozenAfterInitDataclass):
 
 
 @dataclass(init=False, **slots_if310())
-class CommittedWrite(FrozenAfterInitDataclass):
+class CommittedWrite(FrozenAfterInitDataclass, AnySuccess):
+    if TYPE_CHECKING:
+
+        def _AnySuccess_marker(self, no_call: Never) -> Never: ...
+
     ok: Literal[True]
     conflicts: Mapping[KvKey, Check]  # empty
     versionstamp: VersionStamp

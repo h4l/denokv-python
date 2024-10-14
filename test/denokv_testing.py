@@ -21,6 +21,9 @@ from aiohttp import web
 from fdb.tuple import pack
 from fdb.tuple import unpack
 from google.protobuf.message import Message
+from v8serialize.constants import SerializationTag
+from v8serialize.decode import DecodeContext
+from v8serialize.decode import DecodeNextFn
 from yarl import URL
 
 from denokv._datapath_pb2 import AtomicWrite
@@ -79,7 +82,27 @@ E = TypeVar("E")
 E2 = TypeVar("E2")
 MessageT = TypeVar("MessageT", bound=Message)
 
-v8_decoder = v8serialize.Decoder()
+
+def decode_js_number_as_float(
+    tag: SerializationTag, /, ctx: DecodeContext, next: DecodeNextFn
+) -> object:
+    if tag in {
+        SerializationTag.kInt32,
+        SerializationTag.kDouble,
+        SerializationTag.kUint32,
+        SerializationTag.kNumberObject,
+    }:
+        number = next(tag)
+        if isinstance(number, int):
+            return float(number)
+        return number
+    return next(tag)
+
+
+v8_bigint_decoder = v8serialize.Decoder(
+    decode_steps=[decode_js_number_as_float, *v8serialize.default_decode_steps]
+)
+"""Decodes JS Number as float and BigInt as int."""
 v8_bigint_encoder = create_default_v8_encoder()
 
 
@@ -513,7 +536,7 @@ def decode_number_value(
 
 def decode_v8_number(data: bytes) -> int | float:
     try:
-        value = v8_decoder.decodes(data)
+        value = v8_bigint_decoder.decodes(data)
     except v8serialize.V8SerializeError as e:
         raise ValueError("data is not a valid V8-serialized value") from e
     if not isinstance(value, (int, float)):
@@ -552,7 +575,7 @@ def encode_kv_write_value(value: object, expires_at_ms: int = 0) -> KvWriteValue
 
 def decode_enqueue_message(enqueue: Enqueue) -> MockKvDbMessage:
     try:
-        payload_value = v8_decoder.decodes(enqueue.payload)
+        payload_value = v8_bigint_decoder.decodes(enqueue.payload)
     except v8serialize.V8SerializeError as e:
         raise ValueError("Enqueue payload is not a valid V8-encoded value") from e
     keys_if_undelivered = list[KvKey]()
@@ -726,9 +749,13 @@ def add_entries(
     return version
 
 
-def unsafe_parse_protobuf_kv_entry(raw: ProtobufKvEntry) -> KvEntry:
+def unsafe_parse_protobuf_kv_entry(
+    raw: ProtobufKvEntry, v8_decoder: v8serialize.Decoder | None = None
+) -> KvEntry:
+    if v8_decoder is None:
+        v8_decoder = v8_bigint_decoder
     key, value, versionstamp = assume_ok(
-        parse_protobuf_kv_entry(raw, v8_decoder=v8_decoder, le64_type=KvU64)
+        parse_protobuf_kv_entry(raw, v8_decoder=v8_bigint_decoder, le64_type=KvU64)
     )
     return KvEntry(KvKey.wrap_tuple_keys(key), value, VersionStamp(versionstamp))
 

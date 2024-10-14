@@ -12,6 +12,7 @@ from denokv._pycompat.dataclasses import slots_if310
 
 if TYPE_CHECKING:
     from typing_extensions import Never
+    from typing_extensions import Self
     from typing_extensions import TypeAlias
     from typing_extensions import TypeIs
 
@@ -28,6 +29,32 @@ class AnyFailure(Protocol, metaclass=ABCMeta):
 
 T_co = TypeVar("T_co", covariant=True)
 E_co = TypeVar("E_co", covariant=True)
+
+
+class Some(Generic[T_co]):
+    if TYPE_CHECKING:
+
+        def _AnySuccess_marker(self, no_call: Never) -> Never: ...
+
+    value: T_co
+
+
+class Nothing:
+    if TYPE_CHECKING:
+
+        def _AnyFailure_marker(self, no_call: Never) -> Never: ...
+
+    def __new__(cls) -> Self:
+        instance = object.__new__(cls)
+
+        def __new__(cls) -> Self:
+            return instance
+
+        Nothing.__new__ = __new__
+        return instance
+
+
+Option: TypeAlias = "Some[T_co] | Nothing"
 
 
 @AnySuccess.register

@@ -1408,3 +1408,20 @@ def test_CheckFailure__validates_constructor_args(
             failed_check_indexes=[5],
             endpoint=example_endpoint,
         )
+
+
+def test_ResponseUnsuccessful(example_endpoint: EndpointInfo) -> None:
+    msg = "Server rejected Data Path request indicating client error"
+    response_body = "Info about what is wrong."
+    status = 400
+    e = ResponseUnsuccessful(
+        msg,
+        status=status,
+        body_text=response_body,
+        endpoint=example_endpoint,
+        auto_retry=AutoRetry.NEVER,
+    )
+    assert str(msg) in str(e)
+    assert str(status) in str(e)
+    assert str(response_body) in str(e)
+    assert e.endpoint is example_endpoint

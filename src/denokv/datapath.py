@@ -173,6 +173,12 @@ class ResponseUnsuccessful(DataPathDenoKvError):
         self.status = status
         self.body_text = body_text
 
+    def __str__(self) -> str:
+        return (
+            f"{super().__str__()}: HTTP response: status={self.status}, "
+            f"body_text={self.body_text!r}"
+        )
+
 
 class RequestUnsuccessful(DataPathDenoKvError):
     """Unable to make a Data Path request to the KV server."""

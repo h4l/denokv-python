@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Iterable
+from typing import Literal
 from typing import Sequence
 
 import pytest
@@ -12,10 +13,159 @@ from typing_extensions import TypeIs
 from denokv.result import AnyFailure
 from denokv.result import AnySuccess
 from denokv.result import Err
+from denokv.result import Nothing
 from denokv.result import Ok
+from denokv.result import Option
 from denokv.result import Result
+from denokv.result import Some
 from denokv.result import is_err
 from denokv.result import is_ok
+
+
+def test_Option__cannot_be_subclassed() -> None:
+    with pytest.raises(TypeError, match=r"cannot subclass Option"):
+
+        class Foo(Option[object]):
+            pass
+
+
+def test_Option_constructor() -> None:
+    nothing: Nothing = Option()
+    some: Some[int] = Option(1)
+    assert Option.is_nothing(nothing)
+    assert Option.is_some(some)
+
+
+def test_Option_is_some() -> None:
+    """Check that is_some / is_some_and narrow types."""
+
+    def is_token(s: str) -> TypeIs[Literal["foo", "bar"]]:
+        return s in ("foo", "bar")
+
+    assert Option.is_some(Some("foo"))
+    assert not Option.is_some(Nothing())
+    assert Option.is_some_and(Some("foo"), is_token)
+    assert not Option.is_some_and(Nothing(), is_token)
+
+    things = [Nothing(), Some("abc"), Some("foo")]
+
+    tokens: list[Literal["foo", "bar"]] = [
+        t.value for t in things if Option.is_some_and(t, is_token)
+    ]
+    assert tokens == ["foo"]
+    not_tokens: list[Option[str]] = [
+        t for t in things if not Option.is_some_and(t, is_token)
+    ]
+    assert not_tokens == [Nothing(), Some("abc")]
+
+
+def test_Option_is_nothing_or() -> None:
+    def is_token(s: str) -> TypeIs[Literal["foo", "bar"]]:
+        return s in ("foo", "bar")
+
+    things: list[Option[Literal["foo", "abc"]]] = [
+        Option("foo"),
+        Option("abc"),
+        Nothing(),
+    ]
+    nothings: list[Nothing] = [t for t in things if Option.is_nothing(t)]
+    assert nothings == [Nothing()]
+
+    tokens_or_nothing: list[Option[Literal["foo", "bar"]]] = [
+        t for t in things if Option.is_nothing_or(t, is_token)
+    ]
+    assert tokens_or_nothing == [Some("foo"), Nothing()]
+
+
+def test_Option_flatten() -> None:
+    """Check that type are correctly inferred when flattening nested Options."""
+    opts: list[Option[Option[int]]] = [Some(Some(1)), Nothing()]
+    opts2: list[Option[int]] = [o.flatten() for o in opts]
+    assert [o.value_or(None) for o in opts2] == [1, None]
+
+    nothing: Nothing = Some(Nothing()).flatten()
+    assert nothing == Nothing()
+
+    something: Some[int] = Some(Some(1)).flatten()
+    assert something == Some(1)
+    something2: Some[int] = Some(2).flatten()
+    assert something2 == Some(2)
+
+
+def test_Option() -> None:
+    assert Some(1).or_raise(AssertionError) == 1
+    with pytest.raises(AssertionError, match=r"attempted to access value from Nothing"):
+        Nothing().or_raise(AssertionError)
+
+    with pytest.raises(ValueError, match=r"No values were provided"):
+        Nothing().or_raise(ValueError, "No values were provided")
+
+    assert Some("a").filter(int) == Nothing()
+    assert Some(1).filter(int) == Some(1)
+    assert Some(-1).filter(lambda x: x > 0) == Nothing()
+    assert Some(1).filter(lambda x: x > 0) == Some(1)
+
+    assert Some(Some(2)).flatten() == Some(2)
+    assert Some(2).flatten() == Some(2)
+    assert Some(Nothing()).flatten() == Nothing()
+    assert Nothing().flatten() == Nothing()
+
+    assert Some(2).map(lambda x: x * 2) == Some(4)
+    assert Nothing().map(lambda x: x * 2) == Nothing()
+
+    assert Some(2).map_or(-1, lambda x: x * 2) == 4
+    assert Nothing().map_or(-1, lambda x: x * 2) == -1
+    assert Nothing().map_or("foo", lambda x: x * 2) == "foo"
+
+    assert Some(2).map_or_else(lambda: -1, lambda x: x * 2) == 4
+    assert Nothing().map_or_else(lambda: -1, lambda x: x * 2) == -1
+    assert Nothing().map_or_else(lambda: "foo", lambda x: x * 2) == "foo"
+
+    assert Some(1).ok_or("x") == Ok(1)
+    assert Nothing().ok_or("x") == Err("x")
+
+    assert Some(1).ok_or_else(lambda: "x") == Ok(1)
+    assert Nothing().ok_or_else(lambda: "x") == Err("x")
+
+    assert Some(1).or_(Some(2)) == Some(1)
+    assert Some(1).or_(Nothing()) == Some(1)
+    assert Nothing().or_(Some(2)) == Some(2)
+
+    assert Some(1).or_else(lambda: Some(2)) == Some(1)
+    assert Some(1).or_else(lambda: Nothing()) == Some(1)
+    assert Nothing().or_else(lambda: Some(2)) == Some(2)
+
+    assert Some(1).value == 1
+    with pytest.raises(TypeError, match=r"attempted to access value from Nothing"):
+        Nothing().value  # noqa: B018
+
+    assert Some(1).value_or(2) == 1
+    assert Nothing().value_or(2) == 2
+
+    assert Some(1).value_or_else(lambda: 2) == 1
+    assert Nothing().value_or_else(lambda: 2) == 2
+
+    assert Some((1, 2)).unzip() == (Some(1), Some(2))
+    assert Nothing().unzip() == (Nothing(), Nothing())
+    with pytest.raises(TypeError, match=r"value is not a pair"):
+        Some(1).unzip()  # type: ignore[misc]
+
+    assert Some(1).xor(Some(2)) == Nothing()
+    assert Some(1).xor(Nothing()) == Some(1)
+    assert Nothing().xor(Some(2)) == Some(2)
+
+    assert Some(1).zip(Some(2)) == Some((1, 2))
+    assert Some(1).zip(Nothing()) == Nothing()
+    assert Nothing().zip(Some(2)) == Nothing()
+
+    assert int("FF", 16) == 255
+    assert Some("FF").zip_with(Some(16), int) == Some(255)
+    assert Some("FF").zip_with(Nothing(), int) == Nothing()
+    assert Nothing().zip_with(Some(16), int) == Nothing()
+
+    def type_check_zip_with(a: Option[str], b: Option[object]) -> Option[int]:
+        # must be type error
+        return a.zip_with(b, int)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("result", [(Ok(1)), (Err(ValueError("example")))])
@@ -90,7 +240,7 @@ def test_Ok_is_ok_and(ok: bool, result: Result[object, str]) -> None:
         assert val == 3
     else:
         assert not Ok.is_ok_and(result, is_int)
-        type_error: Err[Any] = result  # type: ignore[assignment]
+        type_error: Err[Any] = result  # type: ignore[assignment]  # noqa: F841
 
 
 @pytest.mark.parametrize("ok,result", [(True, Ok(3)), (False, Err("x"))])
@@ -112,7 +262,7 @@ def test_Err_is_err_and(ok: bool, result: Result[int, str | bytes]) -> None:
         assert not Err.is_err_and(result, is_str)
         # This must be a type error — we only know the result does not contain a
         # str, not that it is an Ok.
-        type_error: Ok[Any] = result  # type: ignore[assignment]
+        type_error: Ok[Any] = result  # type: ignore[assignment]  # noqa: F841
     else:
         assert Err.is_err_and(result, is_str)
         error: str = result.error

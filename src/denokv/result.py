@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Callable
-from typing import Generic
 from typing import Iterable
 from typing import Iterator
 from typing import Protocol
 from typing import TypeVar
+from typing import Union
+from typing import cast
 from typing import overload
 from typing import runtime_checkable
 
@@ -19,10 +20,13 @@ from denokv._pycompat.dataclasses import slots_if310
 
 if TYPE_CHECKING:
     from typing_extensions import Never
+    from typing_extensions import ParamSpec
     from typing_extensions import Self
     from typing_extensions import TypeAlias
     from typing_extensions import TypeGuard
     from typing_extensions import TypeIs
+
+    P = ParamSpec("P")
 
 
 @runtime_checkable
@@ -40,17 +44,572 @@ T_co = TypeVar("T_co", covariant=True)
 E = TypeVar("E")
 E_co = TypeVar("E_co", covariant=True)
 U = TypeVar("U")
+V = TypeVar("V")
 
 
-class Some(Generic[T_co]):
+class OptionMethods(Iterable[T_co], Protocol[T_co]):
+    """Methods implemented by Some and Nothing."""
+
+    def or_raise(
+        self, exc: Callable[P, BaseException], *exc_args: P.args, **exc_kwargs: P.kwargs
+    ) -> T_co:
+        """
+        Return the value of this Some or throw an exception if this is Nothing.
+
+        If exc is an exception type and no arguments are provided, the type is
+        passed a string message indicating that the option is Nothing.
+
+        Notes
+        -----
+        - Use `value_or()` / `value_or_else()` to return a default instead of
+          raising.
+        - Use the `value` property to get the value while raising a TypeError if
+          the Option is Nothing.
+
+        Examples
+        --------
+        >>> Some(1).or_raise(AssertionError)
+        1
+        >>> Nothing().or_raise(AssertionError)
+        Traceback (most recent call last):
+        AssertionError: attempted to access value from Nothing
+        >>> Nothing().or_raise(ValueError, 'No values were provided')
+        Traceback (most recent call last):
+        ValueError: No values were provided
+        """
+
+    def filter(
+        self, check: type[U] | Callable[[T_co], bool] | None = None
+    ) -> Option[T_co]:
+        """
+        Return Some if its value passes a check, otherwise Nothing.
+
+        If no check is provided, values are kept if they are True according to
+        `bool()`.
+
+        This method cannot narrow the return type, use
+        [Option.filter](`denokv.result.Option.is_some_and`) to narrow the return
+        type.
+
+        Examples
+        --------
+        >>> Some('a').filter(int)
+        Nothing()
+        >>> Some(1).filter(int)
+        Some(1)
+        >>> Some(-1).filter(lambda x: x > 0)
+        Nothing()
+        >>> Some(1).filter(lambda x: x > 0)
+        Some(1)
+        """
+
+    @overload
+    def flatten(self: OptionMethods[OptionMethods[U]]) -> OptionMethods[U]: ...
+    @overload
+    def flatten(self) -> Self: ...
+
+    def flatten(self) -> Self:
+        """
+        Flatten a Some containing an Option into a single level.
+
+        Examples
+        --------
+        >>> Some(Some(2)).flatten()
+        Some(2)
+        >>> Some(2).flatten()
+        Some(2)
+        >>> Some(Nothing()).flatten()
+        Nothing()
+        >>> Nothing().flatten()
+        Nothing()
+        """
+
+    def inspect(self, fn: Callable[[T_co], None]) -> Self:
+        """
+        Call `fn(self.value)` only if this is Some, then return self.
+
+        Examples
+        --------
+        >>> assert Some('Hello!').inspect(print) == Some('Hello!')
+        Hello!
+        >>> assert Nothing().inspect(print) == Nothing()
+        """
+
+    def map(self, fn: Callable[[T_co], U]) -> Option[U]:
+        """
+        Transform this Some's value with a function, otherwise Nothing.
+
+        Examples
+        --------
+        >>> Some(2).map(lambda x: x * 2)
+        Some(4)
+        >>> Nothing().map(lambda x: x * 2)
+        Nothing()
+        """
+
+    def map_or(self, default: U, fn: Callable[[T_co], V]) -> U | V:
+        """
+        Return `fn(this.value)` or default if this is Nothing.
+
+        Examples
+        --------
+        >>> Some(2).map_or(-1, lambda x: x * 2)
+        4
+        >>> Nothing().map_or(-1, lambda x: x * 2)
+        -1
+        >>> Nothing().map_or('foo', lambda x: x * 2)
+        'foo'
+        """
+
+    def map_or_else(
+        self, default_fn: Callable[[], U], fn: Callable[[T_co], V]
+    ) -> U | V:
+        """
+        Return `fn(this.value)` or `default_fn()` if this is Nothing.
+
+        Examples
+        --------
+        >>> Some(2).map_or_else(lambda: -1, lambda x: x * 2)
+        4
+        >>> Nothing().map_or_else(lambda: -1, lambda x: x * 2)
+        -1
+        >>> Nothing().map_or_else(lambda: 'foo', lambda x: x * 2)
+        'foo'
+        """
+
+    def ok_or(self, error: E) -> Result[T_co, E]:
+        """
+        Transform this into a Result of `Ok(self.value)` or `Err(error)` if Nothing.
+
+        Examples
+        --------
+        >>> Some(1).ok_or('x')
+        Ok(1)
+        >>> Nothing().ok_or('x')
+        Err('x')
+        """
+
+    def ok_or_else(self, fn: Callable[[], E]) -> Result[T_co, E]:
+        """
+        Transform this into a Result of `Ok(self.value)` or `Err(fn())` if Nothing.
+
+        Examples
+        --------
+        >>> Some(1).ok_or_else(lambda: 'x')
+        Ok(1)
+        >>> Nothing().ok_or_else(lambda: 'x')
+        Err('x')
+        """
+
+    def or_(self, other: Option[U]) -> Option[T_co | U]:
+        """
+        Return this if Some, otherwise other.
+
+        Examples
+        --------
+        >>> Some(1).or_(Some(2))
+        Some(1)
+        >>> Some(1).or_(Nothing())
+        Some(1)
+        >>> Nothing().or_(Some(2))
+        Some(2)
+        """
+
+    def or_else(self, fn: Callable[[], Option[U]]) -> Option[T_co | U]:
+        """
+        Return this if Some, otherwise the Option result of `fn()`.
+
+        Examples
+        --------
+        >>> Some(1).or_else(lambda: Some(2))
+        Some(1)
+        >>> Some(1).or_else(lambda: Nothing())
+        Some(1)
+        >>> Nothing().or_else(lambda: Some(2))
+        Some(2)
+        """
+
+    @property
+    def value(self) -> T_co | Never:
+        """
+        The value in this Result. Raises TypeError if accessed from Nothing.
+
+        Examples
+        --------
+        >>> Some(1).value
+        1
+        >>> Nothing().value
+        Traceback (most recent call last):
+        TypeError: attempted to access value from Nothing
+        """
+
+    def value_or(self, default: U) -> T_co | U:
+        """
+        Return the value in this Some or default if this is Nothing.
+
+        Examples
+        --------
+        >>> Some(1).value_or(2)
+        1
+        >>> Nothing().value_or(2)
+        2
+        """
+
+    def value_or_else(self, fn: Callable[[], U]) -> T_co | U:
+        """
+        Return the value in this Some or the result of `fn()` if this is Nothing.
+
+        Examples
+        --------
+        >>> Some(1).value_or_else(lambda: 2)
+        1
+        >>> Nothing().value_or_else(lambda: 2)
+        2
+        """
+
+    def xor(self, other: Option[U]) -> Option[T_co | U]:
+        """
+        If just one of self and other is Some, return it, otherwise Nothing().
+
+        Examples
+        --------
+        >>> Some(1).xor(Some(2))
+        Nothing()
+        >>> Some(1).xor(Nothing())
+        Some(1)
+        >>> Nothing().xor(Some(2))
+        Some(2)
+        """
+
+    def zip(self, other: Option[U]) -> Option[tuple[T_co, U]]:
+        """
+        Pair this value with the value in other if both are Some.
+
+        Examples
+        --------
+        >>> from denokv.result import Some, Nothing
+        >>> Some(1).zip(Some(2))
+        Some((1, 2))
+        >>> Some(1).zip(Nothing())
+        Nothing()
+        >>> Nothing().zip(Some(2))
+        Nothing()
+        """
+
+    def zip_with(self, other: Option[U], fn: Callable[[T_co, U], V]) -> Option[V]:
+        """
+        Call fn with the pair of this and the value in other if both are Some.
+
+        Examples
+        --------
+        >>> Some('FF').zip_with(Some(16), int)
+        Some(255)
+        >>> Some('FF').zip_with(Nothing(), int)
+        Nothing()
+        >>> Nothing().zip_with(Some(16), int)
+        Nothing()
+        """
+
+
+class Option(OptionMethods[T_co], ABC):
+    """
+    Represents the presence or absence of a value as Some(_) and Nothing().
+
+    Examples
+    --------
+    >>> Option(1)
+    Some(1)
+    >>> Option()
+    Nothing()
+    """
+
+    @overload
+    def __new__(cls) -> Nothing: ...
+
+    @overload
+    def __new__(cls, value: T, /) -> Some[T]: ...
+
+    def __new__(cls, *args: T) -> Option[T]:
+        if len(args) == 0:
+            return Nothing()
+        return Some(args[0])
+
+    def __init_subclass__(cls) -> None:
+        module = globals()
+        if "Some" in module and "Nothing" in module:
+            raise TypeError("cannot subclass Option")
+
+    @overload
+    def flatten(self: Option[Option[U]]) -> Option[U]: ...
+    @overload
+    def flatten(self) -> Self: ...
+
+    @abstractmethod
+    def flatten(self: Option[Option[U] | T_co]) -> Option[U] | Option[T_co]:
+        pass
+
+    @staticmethod
+    def is_nothing(option: Option[T]) -> TypeIs[Nothing]:
+        """
+        Check if an Option is Nothing, narrowing its type.
+
+        Example
+        -------
+        >>> Some.is_nothing(Some(1))
+        False
+        >>> Some.is_nothing(Nothing())
+        True
+
+        Notes
+        -----
+        This function is static because Python can't narrow the type of self
+        with instance methods.
+        """
+        return isinstance(option, Nothing)
+
+    @overload
+    @staticmethod
+    def is_nothing_or(option: Option[object], check: type[U]) -> TypeIs[Option[U]]: ...
+
+    @overload
+    @staticmethod
+    def is_nothing_or(
+        option: Option[T], check: Callable[[T], TypeIs[U]]
+    ) -> TypeGuard[Option[U]]: ...
+
+    # MyPy complains: "Overloaded function implementation does not accept all
+    # possible arguments of signature 2". Seems fine to me...
+    @staticmethod  # type: ignore[misc]
+    def is_nothing_or(
+        option: Option[T], check: type[U] | Callable[[T], TypeIs[U]]
+    ) -> bool:
+        """
+        Narrow the type of an Option to Nothing, or Some whose value passes a test.
+
+        Examples
+        --------
+        >>> is_negative = lambda x: x < 0
+        >>> Some.is_nothing_or(Some(1), is_negative)
+        False
+        >>> Some.is_nothing_or(Some(-1), is_negative)
+        True
+        >>> Some.is_nothing_or(Nothing(), is_negative)
+        True
+
+        Notes
+        -----
+        This function is static because Python can't narrow the type of self
+        with instance methods.
+        """
+        if isinstance(option, Nothing):
+            return True
+        if isinstance(check, type):
+            return isinstance(option.value, check)
+        return check(option.value)
+
+    @staticmethod
+    def is_some(option: Option[T]) -> TypeIs[Some[T]]:
+        """
+        Check if an Option is Some, narrowing its type.
+
+        Examples
+        --------
+        >>> Some.is_some(Some(1))
+        True
+        >>> Some.is_some(Nothing())
+        False
+
+        Notes
+        -----
+        This function is static because Python can't narrow the type of self
+        with instance methods.
+        """
+        return isinstance(option, Some)
+
+    @staticmethod
+    def is_some_and(
+        option: Option[T], check: Callable[[T], TypeIs[U]]
+    ) -> TypeGuard[Some[U]]:
+        """
+        Narrow the type of an Option to Some whose value passes a test.
+
+        Examples
+        --------
+        >>> is_positive = lambda x: x > 0
+
+        >>> assert Some.is_some_and(Some(1), is_positive)
+        >>> assert not Some.is_some_and(Some(-1), is_positive)
+        >>> assert not Some.is_some_and(Nothing(), is_positive)
+
+        Notes
+        -----
+        This function is static because Python can't narrow the type of self
+        with instance methods.
+        """
+        return isinstance(option, Some) and check(option.value)
+
+    @staticmethod
+    def next(it: Iterable[T]) -> Option[T]:
+        """
+        Get the first value from an iterable as Some, or Nothing if it's empty.
+
+        Examples
+        --------
+        >>> Option.next(())
+        Nothing()
+        >>> Option.next([3])
+        Some(3)
+        >>> it = iter([3])
+        >>> Option.next(it), Option.next(it)
+        (Some(3), Nothing())
+        """
+        try:
+            return Some(next(iter(it)))
+        except StopIteration:
+            return Nothing()
+
+
+@AnySuccess.register
+@dataclass(frozen=True, **slots_if310())
+class Some(Option[T_co]):
+    """
+    A value — An Option representing the presence of a value.
+
+    Examples
+    --------
+    >>> Some(2).value
+    2
+    >>> Some(2) == 2
+    False
+    >>> is_ok(Some(2))
+    True
+    >>> is_err(Some(2))
+    False
+    >>> is_err(Some(Exception()))
+    False
+    >>> is_ok(Some(Exception()))
+    True
+    """
+
     if TYPE_CHECKING:
 
         def _AnySuccess_marker(self, no_call: Never) -> Never: ...
 
+    def __new__(cls, value: T_co) -> Some[T_co]:
+        obj = object.__new__(Some)
+        object.__setattr__(obj, "value", value)
+        return obj
+
     value: T_co
 
+    def or_raise(
+        self, exc: Callable[P, BaseException], *exc_args: P.args, **exc_kwargs: P.kwargs
+    ) -> T_co:
+        return self.value
 
-class Nothing:
+    def filter(
+        self, check: type[U] | Callable[[T_co], bool] | None = None
+    ) -> Option[T_co]:
+        if isinstance(check, type):
+            return self if isinstance(self.value, check) else Nothing()
+        return self if (check or bool)(self.value) else Nothing()
+
+    # Ignoring this is necessary to type this correctly, and seems fine in
+    # practice. See https://stackoverflow.com/a/74567241/693728
+    @overload  # type: ignore[override]
+    def flatten(self: Some[Nothing]) -> Nothing: ...  # type: ignore[overload-overlap]
+    @overload
+    def flatten(self: Some[Some[U]]) -> Some[U]: ...
+    @overload
+    def flatten(self) -> Self: ...
+
+    def flatten(self: Some[Some[U] | T_co]) -> Some[U] | Nothing | Some[T_co]:
+        if isinstance(self.value, Option):
+            return self.value
+        return cast(Some[T_co], self)
+
+    def inspect(self, fn: Callable[[T_co], None]) -> Self:
+        fn(self.value)
+        return self
+
+    def map(self, fn: Callable[[T_co], U]) -> Some[U]:
+        return Some(fn(self.value))
+
+    def map_or(self, default: U, fn: Callable[[T_co], V]) -> V:
+        return fn(self.value)
+
+    def map_or_else(self, default_fn: Callable[[], U], fn: Callable[[T_co], V]) -> V:
+        return fn(self.value)
+
+    def ok_or(self, error: E) -> Ok[T_co]:
+        return Ok(self.value)
+
+    def ok_or_else(self, fn: Callable[[], E]) -> Ok[T_co]:
+        return Ok(self.value)
+
+    def or_(self, other: Option[U]) -> Option[T_co]:
+        return self
+
+    def or_else(self, fn: Callable[[], Option[U]]) -> Option[T_co]:
+        return self
+
+    def value_or(self, default: U) -> T_co:
+        return self.value
+
+    def value_or_else(self, fn: Callable[[], U]) -> T_co:
+        return self.value
+
+    def unzip(self: Option[tuple[U, V]]) -> tuple[Option[U], Option[V]]:
+        try:
+            left, right = self.value
+        except TypeError as e:
+            raise TypeError("value is not a pair") from e
+        return Some(left), Some(right)
+
+    def xor(self, other: Option[U]) -> Option[T_co | U]:
+        if isinstance(other, Nothing):
+            return self
+        if isinstance(other, Some):
+            return Nothing()
+        return other
+
+    def zip(self, other: Option[U]) -> Option[tuple[T_co, U]]:
+        if isinstance(other, Some):
+            return Some((self.value, other.value))
+        return Nothing()
+
+    def zip_with(self, other: Option[U], fn: Callable[[T_co, U], V]) -> Option[V]:
+        if isinstance(other, Some):
+            return Some(fn(self.value, other.value))
+        return Nothing()
+
+    def __repr__(self) -> str:
+        return f"Some({self.value!r})"
+
+    def __iter__(self) -> Iterator[T_co]:
+        return iter((self.value,))
+
+
+@AnyFailure.register
+@dataclass(frozen=True, **slots_if310())
+class Nothing(Option[Never]):
+    """
+    No value — An Option representing the absence of a value.
+
+    Examples
+    --------
+    >>> Nothing()
+    Nothing()
+    >>> Nothing() is Nothing()
+    True
+    >>> Nothing() == Some(None)
+    False
+    >>> is_err(Nothing())
+    True
+    >>> is_ok(Nothing())
+    False
+    """
+
     if TYPE_CHECKING:
 
         def _AnyFailure_marker(self, no_call: Never) -> Never: ...
@@ -64,8 +623,76 @@ class Nothing:
         Nothing.__new__ = __new__  # type: ignore[method-assign,assignment]
         return instance
 
+    def or_raise(
+        self, exc: Callable[P, BaseException], *exc_args: P.args, **exc_kwargs: P.kwargs
+    ) -> Never:
+        if (
+            not (exc_args or exc_kwargs)
+            and isinstance(exc, type)
+            and issubclass(exc, BaseException)
+        ):
+            exc_args = ("attempted to access value from Nothing",)  # type: ignore[assignment]
+        raise exc(*exc_args, **exc_kwargs)
 
-Option: TypeAlias = "Some[T_co] | Nothing"
+    def filter(self, check: type[Any] | Callable[[Any], bool] | None = None) -> Nothing:
+        return self
+
+    def flatten(self) -> Nothing:
+        return self
+
+    def inspect(self, fn: Callable[[Any], None]) -> Nothing:
+        return self
+
+    def map(self, fn: Callable[[Any], Any]) -> Nothing:
+        return self
+
+    def map_or(self, default: U, fn: Callable[[Any], Any]) -> U:
+        return default
+
+    def map_or_else(self, default_fn: Callable[[], U], fn: Callable[[Any], Any]) -> U:
+        return default_fn()
+
+    def ok_or(self, error: E) -> Err[E]:
+        return Err(error)
+
+    def ok_or_else(self, fn: Callable[[], E]) -> Err[E]:
+        return Err(fn())
+
+    def or_(self, other: Option[U]) -> Option[U]:
+        return other
+
+    def or_else(self, fn: Callable[[], Option[U]]) -> Option[U]:
+        return fn()
+
+    @property
+    def value(self) -> Never:
+        raise TypeError("attempted to access value from Nothing")
+
+    def value_or(self, default: U) -> U:
+        return default
+
+    def value_or_else(self, fn: Callable[[], U]) -> U:
+        return fn()
+
+    def unzip(self) -> tuple[Nothing, Nothing]:
+        return self, self
+
+    def xor(self, other: Option[U]) -> Option[T_co | U]:
+        if isinstance(other, Some):
+            return other
+        return self
+
+    def zip(self, other: Option[U]) -> Nothing:
+        return self
+
+    def zip_with(self, other: Option[U], fn: Callable[[Any, Any], Any]) -> Nothing:
+        return self
+
+    def __iter__(self) -> Iterator[Never]:
+        return iter(())
+
+
+# Option: TypeAlias = Union["Some[T_co] | Nothing"]
 
 
 class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
@@ -459,7 +1086,7 @@ class Err(ResultMethods[Never, E_co]):
         return isinstance(result, Err) and check(result.error)
 
 
-Result: TypeAlias = "Ok[T_co] | Err[E_co]"
+Result: TypeAlias = Union["Ok[T_co] | Err[E_co]"]
 
 
 def is_ok(result: AnySuccess | AnyFailure) -> TypeIs[AnySuccess]:

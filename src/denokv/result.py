@@ -11,7 +11,6 @@ from typing import Iterable
 from typing import Iterator
 from typing import Protocol
 from typing import TypeVar
-from typing import Union
 from typing import cast
 from typing import overload
 from typing import runtime_checkable
@@ -22,7 +21,6 @@ if TYPE_CHECKING:
     from typing_extensions import Never
     from typing_extensions import ParamSpec
     from typing_extensions import Self
-    from typing_extensions import TypeAlias
     from typing_extensions import TypeGuard
     from typing_extensions import TypeIs
 
@@ -470,7 +468,7 @@ class Option(OptionMethods[T_co], ABC):
 
 
 @AnySuccess.register
-@dataclass(frozen=True, **slots_if310())
+@dataclass(frozen=True, init=False, **slots_if310())
 class Some(Option[T_co]):
     """
     A value — An Option representing the presence of a value.
@@ -690,9 +688,6 @@ class Nothing(Option[Never]):
 
     def __iter__(self) -> Iterator[Never]:
         return iter(())
-
-
-# Option: TypeAlias = Union["Some[T_co] | Nothing"]
 
 
 class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
@@ -925,12 +920,90 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         """
 
 
+class Result(ResultMethods[T_co, E_co]):
+    """
+    Represents the presence of a value, or a reason the value could not be produced.
+
+    Functions that may fail can return a Result rather than raising an Exception
+    to signal failure.
+
+    Examples
+    --------
+    >>> def parse(x: str) -> Result[int, ValueError]:
+    ...     try:
+    ...         return Ok(int(x))
+    ...     except ValueError as e:
+    ...         return Err(e)
+    >>> parse('42')
+    Ok(42)
+    >>> parse('a4')
+    Err(ValueError("invalid literal for int() with base 10: 'a4'"))
+
+    Results can be created by passing a function and optional arguments to
+    Result. Result will call the function and return the resulting value or
+    exception.
+
+    >>> Result(int, '42')
+    Ok(42)
+    >>> Result(int, 'a4')
+    Err(ValueError("invalid literal for int() with base 10: 'a4'"))
+    """
+
+    def __new__(
+        cls, fn: Callable[P, T], *fn_args: P.args, **fn_kwargs: P.kwargs
+    ) -> Result[T, Exception]:
+        try:
+            return Ok(fn(*fn_args, **fn_kwargs))
+        except Exception as e:
+            return Err(e)
+
+    def __init_subclass__(cls) -> None:
+        module = globals()
+        if "Ok" in module and "Err" in module:
+            raise TypeError("cannot subclass Result")
+
+    @staticmethod
+    def is_ok(result: Result[T_co, Any]) -> TypeIs[Ok[T_co]]:
+        return isinstance(result, Ok)
+
+    # Note: It doesn't seem to be possible to use TypeIs as the return of
+    # is_err_and. If we do, we have to make T object to satisfy the subtype
+    # return requirement, and also mypy incorrectly over-narrows the non-matching
+    # case to Ok, instead of keeping the non-matching Err.
+    @staticmethod
+    def is_ok_and(
+        result: Result[T, object], check: Callable[[T], TypeIs[U]]
+    ) -> TypeGuard[Ok[U]]:
+        """Narrow the type of a result to Ok with a particular value type."""
+        return isinstance(result, Ok) and check(result.value)
+
+    @staticmethod
+    def is_err(result: Result[Any, E_co]) -> TypeIs[Err[E_co]]:
+        return isinstance(result, Err)
+
+    # Note: It doesn't seem to be possible to use TypeIs as the return of
+    # is_err_and. If we do, we have to make T object to satisfy the subtype
+    # return requirement, and also mypy incorrectly over-narrows the non-matching
+    # case to Ok, instead of keeping the non-matching Err.
+    @staticmethod
+    def is_err_and(
+        result: Result[Any, T], check: Callable[[T], TypeIs[U]]
+    ) -> TypeGuard[Err[U]]:
+        """Narrow the type of a result to Err with a particular error type."""
+        return isinstance(result, Err) and check(result.error)
+
+
 @AnySuccess.register
-@dataclass(frozen=True, **slots_if310())
-class Ok(ResultMethods[T_co, Never]):
+@dataclass(frozen=True, init=False, **slots_if310())
+class Ok(Result[T_co, Never]):
     if TYPE_CHECKING:
 
         def _AnySuccess_marker(self, no_call: Never) -> Never: ...
+
+    def __new__(cls, value: T_co) -> Ok[T_co]:
+        obj = object.__new__(Ok)
+        object.__setattr__(obj, "value", value)
+        return obj
 
     value: T_co
 
@@ -1002,28 +1075,18 @@ class Ok(ResultMethods[T_co, Never]):
     def __repr__(self) -> str:
         return f"Ok({self.value!r})"
 
-    @staticmethod
-    def is_ok(result: Result[T_co, Any]) -> TypeIs[Ok[T_co]]:
-        return isinstance(result, Ok)
-
-    # Note: It doesn't seem to be possible to use TypeIs as the return of
-    # is_err_and. If we do, we have to make T object to satisfy the subtype
-    # return requirement, and also mypy incorrectly over-narrows the non-matching
-    # case to Ok, instead of keeping the non-matching Err.
-    @staticmethod
-    def is_ok_and(
-        result: Result[T, object], check: Callable[[T], TypeIs[U]]
-    ) -> TypeGuard[Ok[U]]:
-        """Narrow the type of a result to Ok with a particular value type."""
-        return isinstance(result, Ok) and check(result.value)
-
 
 @AnyFailure.register
-@dataclass(frozen=True, **slots_if310())
-class Err(ResultMethods[Never, E_co]):
+@dataclass(frozen=True, init=False, **slots_if310())
+class Err(Result[Never, E_co]):
     if TYPE_CHECKING:
 
         def _AnyFailure_marker(self, no_call: Never) -> Never: ...
+
+    def __new__(cls, error: E_co) -> Err[E_co]:
+        obj = object.__new__(Err)
+        object.__setattr__(obj, "error", error)
+        return obj
 
     error: E_co
 
@@ -1088,28 +1151,10 @@ class Err(ResultMethods[Never, E_co]):
     def __repr__(self) -> str:
         return f"Err({self.error!r})"
 
-    @staticmethod
-    def is_err(result: Result[Any, E_co]) -> TypeIs[Err[E_co]]:
-        return isinstance(result, Err)
 
-    # Note: It doesn't seem to be possible to use TypeIs as the return of
-    # is_err_and. If we do, we have to make T object to satisfy the subtype
-    # return requirement, and also mypy incorrectly over-narrows the non-matching
-    # case to Ok, instead of keeping the non-matching Err.
-    @staticmethod
-    def is_err_and(
-        result: Result[Any, T], check: Callable[[T], TypeIs[U]]
-    ) -> TypeGuard[Err[U]]:
-        """Narrow the type of a result to Err with a particular error type."""
-        return isinstance(result, Err) and check(result.error)
-
-
-Result: TypeAlias = Union["Ok[T_co] | Err[E_co]"]
-
-
-def is_ok(result: AnySuccess | AnyFailure) -> TypeIs[AnySuccess]:
+def is_ok(result: object) -> TypeIs[AnySuccess]:
     return isinstance(result, AnySuccess)
 
 
-def is_err(result: AnySuccess | AnyFailure) -> TypeIs[AnyFailure]:
+def is_err(result: object) -> TypeIs[AnyFailure]:
     return isinstance(result, AnyFailure)

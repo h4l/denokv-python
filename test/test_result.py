@@ -270,14 +270,17 @@ def test_Err_is_err_and(ok: bool, result: Result[int, str | bytes]) -> None:
 
 
 def test_Result_flatten() -> None:
-    with pytest.raises(
-        TypeError, match=r"Ok value does not contain a Result to flatten"
-    ):
-        # This must be a type error
-        Ok(2).flatten()  # type: ignore[misc]
+    flat_ok: Ok[int] = Ok(Ok(2)).flatten()
+    assert flat_ok == Ok(2)
+    flat_err: Err[str] = Ok(Err("x")).flatten()
+    assert flat_err == Err("x")
+    flat_other: list[Result[int, str]] = [r.flatten() for r in [Ok(2), Err("x")]]
+    assert flat_other == [Ok(2), Err("x")]
+
     assert Ok(Ok(2)).flatten() == Ok(2)
     assert Ok(Err("x")).flatten() == Err("x")
     assert Err("x").flatten() == Err("x")
+    assert Ok(2).flatten() == Ok(2)
 
 
 def test_ok_covariance() -> None:

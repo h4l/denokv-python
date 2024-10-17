@@ -754,6 +754,33 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         >>> assert Err('x').error_or_else(lambda: 2) == 'x'
         """
 
+    @overload
+    def flatten(self: ResultMethods[Ok[U], Never]) -> Ok[U]: ...
+    @overload
+    def flatten(self: ResultMethods[Err[E], Never]) -> Err[E]: ...
+    @overload
+    def flatten(self) -> Result[T_co, E_co]: ...
+
+    def flatten(
+        self: ResultMethods[Result[U, E] | T_co, E_co | Never],
+    ) -> Result[T_co, E_co] | Ok[U] | Err[E]:
+        """
+        Flatten an Ok containing a Result into a single Result.
+
+        Ok not containing a Result are returned as is.
+
+        Examples
+        --------
+        >>> assert Ok(Ok(2)).flatten() == Ok(2)
+        >>> assert Ok(Err('x')).flatten() == Err('x')
+        >>> assert Err('x').flatten() == Err('x')
+
+        >>> assert Ok(Ok(Ok(2))).flatten() == Ok(Ok(2))
+
+        >>> Ok(2).flatten()
+        Ok(2)
+        """
+
     def inspect(self, fn: Callable[[T_co], None]) -> Self:
         """
         Return as is after calling fn with the Ok's value only if this is Ok.
@@ -923,26 +950,17 @@ class Ok(ResultMethods[T_co, Never]):
     def error_or_else(self, fn: Callable[[], U]) -> U:
         return fn()
 
-    def flatten(self: Ok[Result[U, E]]) -> Result[U, E]:
-        """
-        Unwrap a Result in a Result into a single Result.
+    @overload
+    def flatten(self: Ok[Ok[U]]) -> Ok[U]: ...
+    @overload
+    def flatten(self: Ok[Err[E]]) -> Err[E]: ...
+    @overload
+    def flatten(self) -> Result[T_co, E]: ...
 
-        Examples
-        --------
-        >>> assert Ok(Ok(2)).flatten() == Ok(2)
-        >>> assert Ok(Err('x')).flatten() == Err('x')
-        >>> assert Err('x').flatten() == Err('x')
-
-        >>> assert Ok(Ok(Ok(2))).flatten() == Ok(Ok(2))
-
-        # Type error if type-checked
-        >>> Ok(2).flatten()
-        Traceback (most recent call last):
-        TypeError: Ok value does not contain a Result to flatten
-        """
+    def flatten(self: Ok[Result[U, E] | T_co]) -> Result[U, E] | Ok[T_co]:
         if isinstance(self.value, (Ok, Err)):
             return self.value
-        raise TypeError("Ok value does not contain a Result to flatten")
+        return cast(Ok[T_co], self)
 
     def inspect(self, fn: Callable[[T_co], None]) -> Self:
         fn(self.value)

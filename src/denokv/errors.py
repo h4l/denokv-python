@@ -4,7 +4,7 @@ from denokv._pycompat.typing import cast
 
 
 @dataclass(init=False)
-class DenoKvError(BaseException):
+class DenoKvError(Exception):
     message: str
 
     def __init__(self, message: str, *args: object) -> None:

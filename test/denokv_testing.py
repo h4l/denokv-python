@@ -43,6 +43,8 @@ from denokv.kv import VersionStamp
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
+from denokv.result import is_err
+from denokv.result import is_ok
 
 T = TypeVar("T")
 E = TypeVar("E")
@@ -52,7 +54,7 @@ v8_decoder = v8serialize.Decoder()
 
 
 def assume_ok(result: Result[T, E]) -> T:
-    if isinstance(result, Ok):
+    if is_ok(result):
         return result.value
     raise AssertionError(f"result is not Ok: {result}")
 
@@ -66,7 +68,7 @@ def assume_err(result: Result[T, Any], type: type[E]) -> E: ...
 
 
 def assume_err(result: Result[T, E], type: type[E2] | None = None) -> E | E2:
-    if not isinstance(result, Err):
+    if not is_err(result):
         raise AssertionError(f"result is not Err: {result}")
     if type is None or isinstance(result.error, type):
         return result.error

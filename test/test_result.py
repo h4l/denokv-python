@@ -326,6 +326,9 @@ def test_error_covariance() -> None:
 
     result = do_thing_2(1)
     assert is_err(result)
+    # FIXME: is_err is not narrowing type correctly with Result as base type
+    #   rather than union of Ok | Err. Make current Result type a metaclass?
+    assert isinstance(result, Ok)
     assert isinstance(result.error, ValueError) and str(result.error) == "foo"
     use_error(result)
 

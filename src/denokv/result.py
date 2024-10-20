@@ -387,6 +387,8 @@ class Option(OptionMethods[T_co], ABC):
         """
         if isinstance(option, Nothing):
             return True
+        if not isinstance(option, Some):
+            raise TypeError(f"expected Some or Nothing, got: {option}")
         if isinstance(check, type):
             return isinstance(option.value, check)
         return check(option.value)
@@ -554,7 +556,7 @@ class Some(Option[T_co]):
     def value_or_else(self, fn: Callable[[], U]) -> T_co:
         return self.value
 
-    def unzip(self: Option[tuple[U, V]]) -> tuple[Option[U], Option[V]]:
+    def unzip(self: Some[tuple[U, V]]) -> tuple[Option[U], Option[V]]:
         try:
             left, right = self.value
         except TypeError as e:
@@ -1015,7 +1017,7 @@ class Ok(Result[T_co, Never]):
     @overload
     def flatten(self) -> Result[T_co, E]: ...
 
-    def flatten(self: Ok[Result[U, E] | T_co]) -> Result[U, E] | Ok[T_co]:
+    def flatten(self: Ok[Result[U, E] | T_co]) -> Ok[U] | Err[E] | Result[T_co, E]:
         if isinstance(self.value, (Ok, Err)):
             return self.value
         return cast(Ok[T_co], self)

@@ -5,6 +5,7 @@ from typing import Any
 from typing import Iterable
 from typing import Literal
 from typing import Sequence
+from typing import cast
 
 import pytest
 from typing_extensions import Never
@@ -34,6 +35,16 @@ def test_Option_constructor() -> None:
     some: Some[int] = Option(1)
     assert Option.is_nothing(nothing)
     assert Option.is_some(some)
+
+
+def test_Option__value__cannot_reference_value_from_Nothing() -> None:
+    nothing = Nothing()
+    with pytest.raises(TypeError, match=r"attempted to access value from Nothing"):
+        print(nothing.value)  # type: ignore[attr-defined]
+
+    option = cast(Option[int], nothing)
+    with pytest.raises(TypeError, match=r"attempted to access value from Nothing"):
+        print(option.value)  # type: ignore[attr-defined]
 
 
 def test_Option_is_some() -> None:
@@ -137,7 +148,7 @@ def test_Option() -> None:
 
     assert Some(1).value == 1
     with pytest.raises(TypeError, match=r"attempted to access value from Nothing"):
-        Nothing().value  # noqa: B018
+        print(Nothing().value)  # type: ignore[attr-defined]
 
     assert Some(1).value_or(2) == 1
     assert Nothing().value_or(2) == 2
@@ -166,6 +177,26 @@ def test_Option() -> None:
     def type_check_zip_with(a: Option[str], b: Option[object]) -> Option[int]:
         # must be type error
         return a.zip_with(b, int)  # type: ignore[arg-type]
+
+
+def test_Result__error__cannot_reference_value_from_Err() -> None:
+    err: Err[str] = Err("x")
+    with pytest.raises(TypeError, match=r"attempted to access value from Err"):
+        print(err.value)  # type: ignore[attr-defined]
+
+    res = cast(Result[int, str], err)
+    with pytest.raises(TypeError, match=r"attempted to access value from Err"):
+        print(res.value)  # type: ignore[attr-defined]
+
+
+def test_Result__error__cannot_reference_error_from_Ok() -> None:
+    ok: Ok[int] = Ok(1)
+    with pytest.raises(TypeError, match=r"attempted to access error from Ok"):
+        print(ok.error)  # type: ignore[attr-defined]
+
+    res = cast(Result[int, str], ok)
+    with pytest.raises(TypeError, match=r"attempted to access error from Ok"):
+        print(res.error)  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize("result", [(Ok(1)), (Err(ValueError("example")))])
@@ -328,7 +359,6 @@ def test_error_covariance() -> None:
     assert is_err(result)
     # FIXME: is_err is not narrowing type correctly with Result as base type
     #   rather than union of Ok | Err. Make current Result type a metaclass?
-    assert isinstance(result, Ok)
     assert isinstance(result.error, ValueError) and str(result.error) == "foo"
     use_error(result)
 

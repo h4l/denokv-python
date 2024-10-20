@@ -227,20 +227,6 @@ class OptionMethods(Iterable[T_co], Protocol[T_co]):
         Some(2)
         """
 
-    @property
-    def value(self) -> T_co | Never:
-        """
-        The value in this Result. Raises TypeError if accessed from Nothing.
-
-        Examples
-        --------
-        >>> Some(1).value
-        1
-        >>> Nothing().value
-        Traceback (most recent call last):
-        TypeError: attempted to access value from Nothing
-        """
-
     def value_or(self, default: U) -> T_co | U:
         """
         Return the value in this Some or default if this is Nothing.
@@ -499,6 +485,17 @@ class Some(Option[T_co]):
         return obj
 
     value: T_co
+    """
+    The value in this Some. Raises TypeError if accessed from Nothing.
+
+    Examples
+    --------
+    >>> Some(1).value
+    1
+    >>> Nothing().value
+    Traceback (most recent call last):
+    TypeError: attempted to access value from Nothing
+    """
 
     def or_raise(
         self, exc: Callable[P, BaseException], *exc_args: P.args, **exc_kwargs: P.kwargs
@@ -662,9 +659,11 @@ class Nothing(Option[Never]):
     def or_else(self, fn: Callable[[], Option[U]]) -> Option[U]:
         return fn()
 
-    @property
-    def value(self) -> Never:
-        raise TypeError("attempted to access value from Nothing")
+    if not TYPE_CHECKING:
+
+        @property
+        def value(self) -> Never:
+            raise TypeError("attempted to access value from Nothing")
 
     def value_or(self, default: U) -> U:
         return default
@@ -714,19 +713,6 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         >>> assert Ok(2).and_then(lambda x: Ok([x])) == Ok([2])
         >>> assert Ok(2).and_then(lambda x: Err('x')) == Err('x')
         >>> assert Err('x').and_then(lambda x: Ok(x * 2)) == Err('x')
-        """
-
-    @property
-    def error(self) -> E_co | Never:
-        """
-        Access the Err's error. Raises if this is Ok.
-
-        Examples
-        --------
-        >>> assert Err('x').error == 'x'
-        >>> Ok(1).error
-        Traceback (most recent call last):
-        TypeError: attempted to access error from Ok
         """
 
     def error_or(self, default: U) -> E_co | U:
@@ -876,19 +862,6 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         >>> assert Err('error a').or_else(lambda: Err('error b')) == Err('error b')
         """
 
-    @property
-    def value(self) -> T_co | Never:
-        """
-        Access the Ok's value. Raises if this is Err.
-
-        Examples
-        --------
-        >>> assert Ok(1).value == 1
-        >>> Err('x').value
-        Traceback (most recent call last):
-        TypeError: attempted to access value from Err
-        """
-
     def value_or(self, default: U) -> T_co | U:
         """
         Return the Ok's value, or default if this is Err.
@@ -1006,6 +979,16 @@ class Ok(Result[T_co, Never]):
         return obj
 
     value: T_co
+    """
+    Access the Ok's value. Raises TypeError if this is Err.
+
+    Examples
+    --------
+    >>> assert Ok(1).value == 1
+    >>> Err('x').value
+    Traceback (most recent call last):
+    TypeError: attempted to access value from Err
+    """
 
     def and_(self, result: Result[U, E]) -> Result[U, E]:
         return result
@@ -1013,9 +996,11 @@ class Ok(Result[T_co, Never]):
     def and_then(self, fn: Callable[[T_co], Result[U, E]]) -> Result[U, E]:
         return fn(self.value)
 
-    @property
-    def error(self) -> Never:
-        raise TypeError("attempted to access error from Ok")
+    if not TYPE_CHECKING:
+
+        @property
+        def error(self) -> Never:
+            raise TypeError("attempted to access error from Ok")
 
     def error_or(self, default: U) -> U:
         return default
@@ -1089,6 +1074,16 @@ class Err(Result[Never, E_co]):
         return obj
 
     error: E_co
+    """
+    Access the Err's error. Raises TypeError if this is Ok.
+
+    Examples
+    --------
+    >>> assert Err('x').error == 'x'
+    >>> Ok(1).error
+    Traceback (most recent call last):
+    TypeError: attempted to access error from Ok
+    """
 
     def and_(self, result: Result[U, E]) -> Self:
         return self
@@ -1135,9 +1130,11 @@ class Err(Result[Never, E_co]):
     def or_else(self, fn: Callable[[], Result[T_co, U]]) -> Result[T_co, U]:
         return fn()
 
-    @property
-    def value(self) -> Never:
-        raise TypeError("attempted to access value from Err")
+    if not TYPE_CHECKING:
+
+        @property
+        def value(self) -> Never:
+            raise TypeError("attempted to access value from Err")
 
     def value_or(self, x_default: U) -> U:
         return x_default

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from abc import ABC
 from abc import ABCMeta
-from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Callable
+from typing import Generic
 from typing import Iterable
 from typing import Iterator
 from typing import Protocol
 from typing import TypeVar
+from typing import Union
 from typing import cast
 from typing import overload
 from typing import runtime_checkable
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from typing_extensions import Never
     from typing_extensions import ParamSpec
     from typing_extensions import Self
+    from typing_extensions import TypeAlias
     from typing_extensions import TypeGuard
     from typing_extensions import TypeIs
 
@@ -43,6 +44,26 @@ E = TypeVar("E")
 E_co = TypeVar("E_co", covariant=True)
 U = TypeVar("U")
 V = TypeVar("V")
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def doc_from(source: object) -> Callable[[F], F]:
+    def copy_docstring(fn: F) -> F:
+        try:
+            fn_name = fn.__name__
+            t_fn = getattr(source, fn_name)
+            t_fn_doc = t_fn.__doc__
+            assert (
+                getattr(fn, "__doc__", None) is None
+            ), "target already has a __doc__ value"
+            fn.__doc__ = t_fn_doc
+        except Exception as e:
+            raise ValueError(
+                f"Failed to copy docstring from source {source!r} for function {fn!r}"
+            ) from e
+        return fn
+
+    return copy_docstring
 
 
 class OptionMethods(Iterable[T_co], Protocol[T_co]):
@@ -86,7 +107,7 @@ class OptionMethods(Iterable[T_co], Protocol[T_co]):
         `bool()`.
 
         This method cannot narrow the return type, use
-        [Option.filter](`denokv.result.Option.is_some_and`) to narrow the return
+        [Options.filter](`denokv.result.Options.is_some_and`) to narrow the return
         type.
 
         Examples
@@ -295,42 +316,19 @@ class OptionMethods(Iterable[T_co], Protocol[T_co]):
         """
 
 
-class Option(OptionMethods[T_co], ABC):
+class Options(type):
     """
-    Represents the presence or absence of a value as Some(_) and Nothing().
+    Utility functions for Option (Some | None) types.
 
-    Examples
-    --------
-    >>> Option(1)
-    Some(1)
-    >>> Option()
-    Nothing()
+    Some and Nothing represent the presence or absence of a value as Some(_)
+    and Nothing().
     """
 
-    @overload
-    def __new__(cls) -> Nothing: ...
+    # mypy seems to ignore static methods if new is typed like this.
+    if not TYPE_CHECKING:
 
-    @overload
-    def __new__(cls, value: T, /) -> Some[T]: ...
-
-    def __new__(cls, *args: T) -> Option[T]:
-        if len(args) == 0:
-            return Nothing()
-        return Some(args[0])
-
-    def __init_subclass__(cls) -> None:
-        module = globals()
-        if "Some" in module and "Nothing" in module:
-            raise TypeError("cannot subclass Option")
-
-    @overload
-    def flatten(self: Option[Option[U]]) -> Option[U]: ...
-    @overload
-    def flatten(self) -> Self: ...
-
-    @abstractmethod
-    def flatten(self: Option[Option[U] | T_co]) -> Option[U] | Option[T_co]:
-        pass
+        def __new__(self) -> Never:
+            raise TypeError("cannot create instances of Options")
 
     @staticmethod
     def is_nothing(option: Option[T]) -> TypeIs[Nothing]:
@@ -339,9 +337,9 @@ class Option(OptionMethods[T_co], ABC):
 
         Example
         -------
-        >>> Some.is_nothing(Some(1))
+        >>> Options.is_nothing(Some(1))
         False
-        >>> Some.is_nothing(Nothing())
+        >>> Options.is_nothing(Nothing())
         True
 
         Notes
@@ -373,11 +371,11 @@ class Option(OptionMethods[T_co], ABC):
         Examples
         --------
         >>> is_negative = lambda x: x < 0
-        >>> Some.is_nothing_or(Some(1), is_negative)
+        >>> Options.is_nothing_or(Some(1), is_negative)
         False
-        >>> Some.is_nothing_or(Some(-1), is_negative)
+        >>> Options.is_nothing_or(Some(-1), is_negative)
         True
-        >>> Some.is_nothing_or(Nothing(), is_negative)
+        >>> Options.is_nothing_or(Nothing(), is_negative)
         True
 
         Notes
@@ -400,9 +398,9 @@ class Option(OptionMethods[T_co], ABC):
 
         Examples
         --------
-        >>> Some.is_some(Some(1))
+        >>> Options.is_some(Some(1))
         True
-        >>> Some.is_some(Nothing())
+        >>> Options.is_some(Nothing())
         False
 
         Notes
@@ -423,9 +421,9 @@ class Option(OptionMethods[T_co], ABC):
         --------
         >>> is_positive = lambda x: x > 0
 
-        >>> assert Some.is_some_and(Some(1), is_positive)
-        >>> assert not Some.is_some_and(Some(-1), is_positive)
-        >>> assert not Some.is_some_and(Nothing(), is_positive)
+        >>> assert Options.is_some_and(Some(1), is_positive)
+        >>> assert not Options.is_some_and(Some(-1), is_positive)
+        >>> assert not Options.is_some_and(Nothing(), is_positive)
 
         Notes
         -----
@@ -441,12 +439,12 @@ class Option(OptionMethods[T_co], ABC):
 
         Examples
         --------
-        >>> Option.next(())
+        >>> Options.next(())
         Nothing()
-        >>> Option.next([3])
+        >>> Options.next([3])
         Some(3)
         >>> it = iter([3])
-        >>> Option.next(it), Option.next(it)
+        >>> Options.next(it), Options.next(it)
         (Some(3), Nothing())
         """
         try:
@@ -457,7 +455,7 @@ class Option(OptionMethods[T_co], ABC):
 
 @AnySuccess.register
 @dataclass(frozen=True, init=False, **slots_if310())
-class Some(Option[T_co]):
+class Some(Generic[T_co]):
     """
     A value — An Option representing the presence of a value.
 
@@ -499,11 +497,13 @@ class Some(Option[T_co]):
     TypeError: attempted to access value from Nothing
     """
 
+    @doc_from(OptionMethods)
     def or_raise(
         self, exc: Callable[P, BaseException], *exc_args: P.args, **exc_kwargs: P.kwargs
     ) -> T_co:
         return self.value
 
+    @doc_from(OptionMethods)
     def filter(
         self, check: type[U] | Callable[[T_co], bool] | None = None
     ) -> Option[T_co]:
@@ -513,56 +513,84 @@ class Some(Option[T_co]):
 
     # Ignoring this is necessary to type this correctly, and seems fine in
     # practice. See https://stackoverflow.com/a/74567241/693728
-    @overload  # type: ignore[override]
+    @overload
     def flatten(self: Some[Nothing]) -> Nothing: ...  # type: ignore[overload-overlap]
     @overload
     def flatten(self: Some[Some[U]]) -> Some[U]: ...
     @overload
+    def flatten(self: Some[Option[U]]) -> Option[U]: ...  # type: ignore[overload-overlap]
+    @overload
     def flatten(self) -> Self: ...
 
-    def flatten(self: Some[Some[U] | T_co]) -> Some[U] | Nothing | Some[T_co]:
-        if isinstance(self.value, Option):
+    def flatten(self: Some[Option[U] | T_co]) -> Option[U] | Some[T_co]:
+        if isinstance(self.value, (Some, Nothing)):
             return self.value
         return cast(Some[T_co], self)
 
+    doc_from(OptionMethods)(flatten)
+
+    @doc_from(OptionMethods)
     def inspect(self, fn: Callable[[T_co], None]) -> Self:
         fn(self.value)
         return self
 
+    @doc_from(OptionMethods)
     def map(self, fn: Callable[[T_co], U]) -> Some[U]:
         return Some(fn(self.value))
 
+    @doc_from(OptionMethods)
     def map_or(self, default: U, fn: Callable[[T_co], V]) -> V:
         return fn(self.value)
 
+    @doc_from(OptionMethods)
     def map_or_else(self, default_fn: Callable[[], U], fn: Callable[[T_co], V]) -> V:
         return fn(self.value)
 
+    @doc_from(OptionMethods)
     def ok_or(self, error: E) -> Ok[T_co]:
         return Ok(self.value)
 
+    @doc_from(OptionMethods)
     def ok_or_else(self, fn: Callable[[], E]) -> Ok[T_co]:
         return Ok(self.value)
 
+    @doc_from(OptionMethods)
     def or_(self, other: Option[U]) -> Option[T_co]:
         return self
 
+    @doc_from(OptionMethods)
     def or_else(self, fn: Callable[[], Option[U]]) -> Option[T_co]:
         return self
 
+    @doc_from(OptionMethods)
     def value_or(self, default: U) -> T_co:
         return self.value
 
+    @doc_from(OptionMethods)
     def value_or_else(self, fn: Callable[[], U]) -> T_co:
         return self.value
 
     def unzip(self: Some[tuple[U, V]]) -> tuple[Option[U], Option[V]]:
+        """
+        Transform an Option containing a pair into a pair of Options.
+
+        Examples
+        --------
+        >>> Some((1, 2)).unzip()
+        (Some(1), Some(2))
+        >>> Nothing().unzip()
+        (Nothing(), Nothing())
+        >>> Some(42).unzip()
+        Traceback (most recent call last):
+        TypeError: attempted to unzip a Some not containing a pair
+        """
         try:
             left, right = self.value
         except TypeError as e:
-            raise TypeError("value is not a pair") from e
+            raise TypeError("attempted to unzip a Some not containing a pair") from e
         return Some(left), Some(right)
 
+    @doc_from(OptionMethods)
     def xor(self, other: Option[U]) -> Option[T_co | U]:
         if isinstance(other, Nothing):
             return self
@@ -570,11 +598,13 @@ class Some(Option[T_co]):
             return Nothing()
         return other
 
+    @doc_from(OptionMethods)
     def zip(self, other: Option[U]) -> Option[tuple[T_co, U]]:
         if isinstance(other, Some):
             return Some((self.value, other.value))
         return Nothing()
 
+    @doc_from(OptionMethods)
     def zip_with(self, other: Option[U], fn: Callable[[T_co, U], V]) -> Option[V]:
         if isinstance(other, Some):
             return Some(fn(self.value, other.value))
@@ -589,7 +619,7 @@ class Some(Option[T_co]):
 
 @AnyFailure.register
 @dataclass(frozen=True, **slots_if310())
-class Nothing(Option[Never]):
+class Nothing:
     """
     No value — An Option representing the absence of a value.
 
@@ -620,6 +650,7 @@ class Nothing(Option[Never]):
         Nothing.__new__ = __new__  # type: ignore[method-assign,assignment]
         return instance
 
+    @doc_from(OptionMethods)
     def or_raise(
         self, exc: Callable[P, BaseException], *exc_args: P.args, **exc_kwargs: P.kwargs
     ) -> Never:
@@ -631,33 +662,43 @@ class Nothing(Option[Never]):
             exc_args = ("attempted to access value from Nothing",)  # type: ignore[assignment]
         raise exc(*exc_args, **exc_kwargs)
 
+    @doc_from(OptionMethods)
     def filter(self, check: type[Any] | Callable[[Any], bool] | None = None) -> Nothing:
         return self
 
+    @doc_from(OptionMethods)
     def flatten(self) -> Nothing:
         return self
 
+    @doc_from(OptionMethods)
     def inspect(self, fn: Callable[[Any], None]) -> Nothing:
         return self
 
+    @doc_from(OptionMethods)
     def map(self, fn: Callable[[Any], Any]) -> Nothing:
         return self
 
+    @doc_from(OptionMethods)
     def map_or(self, default: U, fn: Callable[[Any], Any]) -> U:
         return default
 
+    @doc_from(OptionMethods)
     def map_or_else(self, default_fn: Callable[[], U], fn: Callable[[Any], Any]) -> U:
         return default_fn()
 
+    @doc_from(OptionMethods)
     def ok_or(self, error: E) -> Err[E]:
         return Err(error)
 
+    @doc_from(OptionMethods)
     def ok_or_else(self, fn: Callable[[], E]) -> Err[E]:
         return Err(fn())
 
+    @doc_from(OptionMethods)
     def or_(self, other: Option[U]) -> Option[U]:
         return other
 
+    @doc_from(OptionMethods)
     def or_else(self, fn: Callable[[], Option[U]]) -> Option[U]:
         return fn()
 
@@ -667,28 +708,38 @@ class Nothing(Option[Never]):
         def value(self) -> Never:
             raise TypeError("attempted to access value from Nothing")
 
+    @doc_from(OptionMethods)
     def value_or(self, default: U) -> U:
         return default
 
+    @doc_from(OptionMethods)
     def value_or_else(self, fn: Callable[[], U]) -> U:
         return fn()
 
+    @doc_from(Some)
     def unzip(self) -> tuple[Nothing, Nothing]:
         return self, self
 
+    @doc_from(OptionMethods)
     def xor(self, other: Option[U]) -> Option[T_co | U]:
         if isinstance(other, Some):
             return other
         return self
 
+    @doc_from(OptionMethods)
     def zip(self, other: Option[U]) -> Nothing:
         return self
 
+    @doc_from(OptionMethods)
     def zip_with(self, other: Option[U], fn: Callable[[Any, Any], Any]) -> Nothing:
         return self
 
     def __iter__(self) -> Iterator[Never]:
         return iter(())
+
+
+Option: TypeAlias = Union[Some[T_co], Nothing]
+"""The presence or absence of a value as Some(_) and Nothing()."""
 
 
 class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
@@ -738,14 +789,14 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         """
 
     @overload
-    def flatten(self: ResultMethods[Ok[U], Never]) -> Ok[U]: ...
-    @overload
-    def flatten(self: ResultMethods[Err[E], Never]) -> Err[E]: ...
-    @overload
-    def flatten(self) -> Result[T_co, E_co]: ...
-
     def flatten(
-        self: ResultMethods[Result[U, E] | T_co, E_co | Never],
+        self: ResultMethods[ResultMethods[U, E], E_co],
+    ) -> ResultMethods[U, E | E_co]: ...
+    @overload
+    def flatten(self) -> Self: ...
+
+    def flatten(  # type: ignore[misc]
+        self: ResultMethods[ResultMethods[U, E] | T_co, E_co],
     ) -> Result[T_co, E_co] | Ok[U] | Err[E]:
         """
         Flatten an Ok containing a Result into a single Result.
@@ -895,9 +946,12 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         """
 
 
-class Result(ResultMethods[T_co, E_co]):
+class Results(ResultMethods[T_co, E_co]):
     """
-    Represents the presence of a value, or a reason the value could not be produced.
+    Utility functions for Result (Ok | Err) types.
+
+    Ok and Err represent the presence of a value, or a reason the value could
+    not be produced.
 
     Functions that may fail can return a Result rather than raising an Exception
     to signal failure.
@@ -913,20 +967,28 @@ class Result(ResultMethods[T_co, E_co]):
     Ok(42)
     >>> parse('a4')
     Err(ValueError("invalid literal for int() with base 10: 'a4'"))
-
-    Results can be created by passing a function and optional arguments to
-    Result. Result will call the function and return the resulting value or
-    exception.
-
-    >>> Result(int, '42')
-    Ok(42)
-    >>> Result(int, 'a4')
-    Err(ValueError("invalid literal for int() with base 10: 'a4'"))
     """
 
-    def __new__(
-        cls, fn: Callable[P, T], *fn_args: P.args, **fn_kwargs: P.kwargs
+    # mypy seems to ignore static methods if new is typed like this.
+    if not TYPE_CHECKING:
+
+        def __new__(self) -> Never:
+            raise TypeError("cannot create instances of Results")
+
+    @staticmethod
+    def call(
+        fn: Callable[P, T], *fn_args: P.args, **fn_kwargs: P.kwargs
     ) -> Result[T, Exception]:
+        """
+        Call a function and return Ok with its return value, or Err if it raises.
+
+        Examples
+        --------
+        >>> Results.call(int, '42')
+        Ok(42)
+        >>> Results.call(int, 'a4')
+        Err(ValueError("invalid literal for int() with base 10: 'a4'"))
+        """
         try:
             return Ok(fn(*fn_args, **fn_kwargs))
         except Exception as e:
@@ -969,16 +1031,11 @@ class Result(ResultMethods[T_co, E_co]):
 
 
 @AnySuccess.register
-@dataclass(frozen=True, init=False, **slots_if310())
-class Ok(Result[T_co, Never]):
+@dataclass(frozen=True, **slots_if310())
+class Ok(Generic[T_co]):
     if TYPE_CHECKING:
 
         def _AnySuccess_marker(self, no_call: Never) -> Never: ...
-
-    def __new__(cls, value: T_co) -> Ok[T_co]:
-        obj = object.__new__(Ok)
-        object.__setattr__(obj, "value", value)
-        return obj
 
     value: T_co
     """
@@ -992,9 +1049,11 @@ class Ok(Result[T_co, Never]):
     TypeError: attempted to access value from Err
     """
 
+    @doc_from(ResultMethods)
     def and_(self, result: Result[U, E]) -> Result[U, E]:
         return result
 
+    @doc_from(ResultMethods)
     def and_then(self, fn: Callable[[T_co], Result[U, E]]) -> Result[U, E]:
         return fn(self.value)
 
@@ -1004,9 +1063,11 @@ class Ok(Result[T_co, Never]):
         def error(self) -> Never:
             raise TypeError("attempted to access error from Ok")
 
+    @doc_from(ResultMethods)
     def error_or(self, default: U) -> U:
         return default
 
+    @doc_from(ResultMethods)
     def error_or_else(self, fn: Callable[[], U]) -> U:
         return fn()
 
@@ -1015,6 +1076,8 @@ class Ok(Result[T_co, Never]):
     @overload
     def flatten(self: Ok[Err[E]]) -> Err[E]: ...
     @overload
+    def flatten(self: Ok[Result[U, E]]) -> Result[U, E]: ...
+    @overload
     def flatten(self) -> Result[T_co, E]: ...
 
     def flatten(self: Ok[Result[U, E] | T_co]) -> Ok[U] | Err[E] | Result[T_co, E]:
@@ -1022,37 +1085,50 @@ class Ok(Result[T_co, Never]):
             return self.value
         return cast(Ok[T_co], self)
 
+    doc_from(ResultMethods)(flatten)
+
+    @doc_from(ResultMethods)
     def inspect(self, fn: Callable[[T_co], None]) -> Self:
         fn(self.value)
         return self
 
+    @doc_from(ResultMethods)
     def inspect_err(self, fn: Callable[[E_co], None]) -> Self:
         return self
 
+    @doc_from(ResultMethods)
     def map(self, fn: Callable[[T_co], U]) -> Ok[U]:
         return Ok(fn(self.value))
 
+    @doc_from(ResultMethods)
     def map_or(self, default: U, fn: Callable[[T_co], U]) -> U:
         return fn(self.value)
 
+    @doc_from(ResultMethods)
     def map_or_else(self, default: Callable[[E_co], U], fn: Callable[[T_co], U]) -> U:
         return fn(self.value)
 
+    @doc_from(ResultMethods)
     def map_err(self, fn: Callable[[E_co], U]) -> Self:
         return self
 
+    @doc_from(ResultMethods)
     def ok(self) -> Some[T_co]:
         return Some(self.value)
 
+    @doc_from(ResultMethods)
     def or_(self, default: Result[T, U]) -> Result[T_co, U]:
         return self
 
+    @doc_from(ResultMethods)
     def or_else(self, fn: Callable[[], Result[T, U]]) -> Result[T_co, U]:
         return self
 
+    @doc_from(ResultMethods)
     def value_or(self, default: U) -> T_co:
         return self.value
 
+    @doc_from(ResultMethods)
     def value_or_else(self, fn: Callable[[], U]) -> T_co:
         return self.value
 
@@ -1064,16 +1140,11 @@ class Ok(Result[T_co, Never]):
 
 
 @AnyFailure.register
-@dataclass(frozen=True, init=False, **slots_if310())
-class Err(Result[Never, E_co]):
+@dataclass(frozen=True, **slots_if310())
+class Err(Generic[E_co]):
     if TYPE_CHECKING:
 
         def _AnyFailure_marker(self, no_call: Never) -> Never: ...
-
-    def __new__(cls, error: E_co) -> Err[E_co]:
-        obj = object.__new__(Err)
-        object.__setattr__(obj, "error", error)
-        return obj
 
     error: E_co
     """
@@ -1087,48 +1158,60 @@ class Err(Result[Never, E_co]):
     TypeError: attempted to access error from Ok
     """
 
+    @doc_from(ResultMethods)
     def and_(self, result: Result[U, E]) -> Self:
         return self
 
+    @doc_from(ResultMethods)
     def and_then(self, fn: Callable[[T_co], Result[U, E]]) -> Self:
         return self
 
+    @doc_from(ResultMethods)
     def error_or(self, default: U) -> E_co:
         return self.error
 
+    @doc_from(ResultMethods)
     def error_or_else(self, fn: Callable[[], U]) -> E_co:
         return self.error
 
+    @doc_from(ResultMethods)
     def flatten(self) -> Self:
         return self
 
-    flatten.__doc__ = Ok.flatten.__doc__
-
+    @doc_from(ResultMethods)
     def inspect(self, fn: Callable[[T_co], None]) -> Self:
         return self
 
+    @doc_from(ResultMethods)
     def inspect_err(self, fn: Callable[[E_co], None]) -> Self:
         fn(self.error)
         return self
 
+    @doc_from(ResultMethods)
     def map(self, fn: Callable[[T_co], U]) -> Self:
         return self
 
+    @doc_from(ResultMethods)
     def map_or(self, default: U, fn: Callable[[T_co], U]) -> U:
         return default
 
+    @doc_from(ResultMethods)
     def map_or_else(self, default: Callable[[E_co], U], fn: Callable[[T_co], U]) -> U:
         return default(self.error)
 
+    @doc_from(ResultMethods)
     def map_err(self, fn: Callable[[E_co], U]) -> Err[U]:
         return Err(fn(self.error))
 
+    @doc_from(ResultMethods)
     def ok(self) -> Nothing:
         return Nothing()
 
+    @doc_from(ResultMethods)
     def or_(self, default: Result[T_co, U]) -> Result[T_co, U]:
         return default
 
+    @doc_from(ResultMethods)
     def or_else(self, fn: Callable[[], Result[T_co, U]]) -> Result[T_co, U]:
         return fn()
 
@@ -1138,9 +1221,11 @@ class Err(Result[Never, E_co]):
         def value(self) -> Never:
             raise TypeError("attempted to access value from Err")
 
+    @doc_from(ResultMethods)
     def value_or(self, x_default: U) -> U:
         return x_default
 
+    @doc_from(ResultMethods)
     def value_or_else(self, fn: Callable[[], U]) -> U:
         return fn()
 
@@ -1151,9 +1236,15 @@ class Err(Result[Never, E_co]):
         return f"Err({self.error!r})"
 
 
+Result: TypeAlias = Union[Ok[T_co], Err[E_co]]
+"""Represents the presence of a value, or a reason the value could not be produced."""
+
+
 def is_ok(result: object) -> TypeIs[AnySuccess]:
+    """Check if a value is a [successful type](`denokv.result.AnySuccess`)."""
     return isinstance(result, AnySuccess)
 
 
 def is_err(result: object) -> TypeIs[AnyFailure]:
+    """Check if a value is a [failure type](`denokv.result.AnyFailure`)."""
     return isinstance(result, AnyFailure)

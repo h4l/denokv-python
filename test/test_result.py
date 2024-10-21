@@ -6,6 +6,7 @@ from typing import Iterable
 from typing import Literal
 from typing import Sequence
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 from typing_extensions import Never
@@ -17,24 +18,25 @@ from denokv.result import Err
 from denokv.result import Nothing
 from denokv.result import Ok
 from denokv.result import Option
+from denokv.result import OptionMethods
+from denokv.result import Options
 from denokv.result import Result
+from denokv.result import ResultMethods
+from denokv.result import Results
 from denokv.result import Some
 from denokv.result import is_err
 from denokv.result import is_ok
 
 
-def test_Option__cannot_be_subclassed() -> None:
-    with pytest.raises(TypeError, match=r"cannot subclass Option"):
+def test_Option__satisfies_OptionMethods() -> None:
+    s = Some(1)
+    n = Nothing()
 
-        class Foo(Option[object]):
-            pass
+    def use_option_like(o: OptionMethods[int]) -> int:
+        return o.value_or(-1)
 
-
-def test_Option_constructor() -> None:
-    nothing: Nothing = Option()
-    some: Some[int] = Option(1)
-    assert Option.is_nothing(nothing)
-    assert Option.is_some(some)
+    assert use_option_like(s) == 1
+    assert use_option_like(n) == -1
 
 
 def test_Option__value__cannot_reference_value_from_Nothing() -> None:
@@ -44,7 +46,7 @@ def test_Option__value__cannot_reference_value_from_Nothing() -> None:
 
     option = cast(Option[int], nothing)
     with pytest.raises(TypeError, match=r"attempted to access value from Nothing"):
-        print(option.value)  # type: ignore[attr-defined]
+        print(option.value)  # type: ignore[union-attr]
 
 
 def test_Option_is_some() -> None:
@@ -53,19 +55,19 @@ def test_Option_is_some() -> None:
     def is_token(s: str) -> TypeIs[Literal["foo", "bar"]]:
         return s in ("foo", "bar")
 
-    assert Option.is_some(Some("foo"))
-    assert not Option.is_some(Nothing())
-    assert Option.is_some_and(Some("foo"), is_token)
-    assert not Option.is_some_and(Nothing(), is_token)
+    assert Options.is_some(Some("foo"))
+    assert not Options.is_some(Nothing())
+    assert Options.is_some_and(Some("foo"), is_token)
+    assert not Options.is_some_and(Nothing(), is_token)
 
-    things = [Nothing(), Some("abc"), Some("foo")]
+    things: list[Option[str]] = [Nothing(), Some("abc"), Some("foo")]
 
     tokens: list[Literal["foo", "bar"]] = [
-        t.value for t in things if Option.is_some_and(t, is_token)
+        t.value for t in things if Options.is_some_and(t, is_token)
     ]
     assert tokens == ["foo"]
     not_tokens: list[Option[str]] = [
-        t for t in things if not Option.is_some_and(t, is_token)
+        t for t in things if not Options.is_some_and(t, is_token)
     ]
     assert not_tokens == [Nothing(), Some("abc")]
 
@@ -75,15 +77,15 @@ def test_Option_is_nothing_or() -> None:
         return s in ("foo", "bar")
 
     things: list[Option[Literal["foo", "abc"]]] = [
-        Option("foo"),
-        Option("abc"),
+        Some("foo"),
+        Some("abc"),
         Nothing(),
     ]
-    nothings: list[Nothing] = [t for t in things if Option.is_nothing(t)]
+    nothings: list[Nothing] = [t for t in things if Options.is_nothing(t)]
     assert nothings == [Nothing()]
 
     tokens_or_nothing: list[Option[Literal["foo", "bar"]]] = [
-        t for t in things if Option.is_nothing_or(t, is_token)
+        t for t in things if Options.is_nothing_or(t, is_token)
     ]
     assert tokens_or_nothing == [Some("foo"), Nothing()]
 
@@ -120,6 +122,12 @@ def test_Option() -> None:
     assert Some(2).flatten() == Some(2)
     assert Some(Nothing()).flatten() == Nothing()
     assert Nothing().flatten() == Nothing()
+
+    effect = Mock()
+    Nothing().inspect(effect)
+    effect.assert_not_called()
+    Some(2).inspect(effect)
+    effect.assert_called_once_with(2)
 
     assert Some(2).map(lambda x: x * 2) == Some(4)
     assert Nothing().map(lambda x: x * 2) == Nothing()
@@ -158,7 +166,9 @@ def test_Option() -> None:
 
     assert Some((1, 2)).unzip() == (Some(1), Some(2))
     assert Nothing().unzip() == (Nothing(), Nothing())
-    with pytest.raises(TypeError, match=r"value is not a pair"):
+    with pytest.raises(
+        TypeError, match=r"attempted to unzip a Some not containing a pair"
+    ):
         Some(1).unzip()  # type: ignore[misc]
 
     assert Some(1).xor(Some(2)) == Nothing()
@@ -179,6 +189,17 @@ def test_Option() -> None:
         return a.zip_with(b, int)  # type: ignore[arg-type]
 
 
+def test_Result__satisfies_ResultMethods() -> None:
+    ok = Ok(1)
+    err = Err("x")
+
+    def use_result_like(r: ResultMethods[int, str]) -> tuple[int | None, str | None]:
+        return r.value_or(None), r.error_or(None)
+
+    assert use_result_like(ok) == (1, None)
+    assert use_result_like(err) == (None, "x")
+
+
 def test_Result__error__cannot_reference_value_from_Err() -> None:
     err: Err[str] = Err("x")
     with pytest.raises(TypeError, match=r"attempted to access value from Err"):
@@ -186,7 +207,7 @@ def test_Result__error__cannot_reference_value_from_Err() -> None:
 
     res = cast(Result[int, str], err)
     with pytest.raises(TypeError, match=r"attempted to access value from Err"):
-        print(res.value)  # type: ignore[attr-defined]
+        print(res.value)  # type: ignore[union-attr]
 
 
 def test_Result__error__cannot_reference_error_from_Ok() -> None:
@@ -196,7 +217,7 @@ def test_Result__error__cannot_reference_error_from_Ok() -> None:
 
     res = cast(Result[int, str], ok)
     with pytest.raises(TypeError, match=r"attempted to access error from Ok"):
-        print(res.error)  # type: ignore[attr-defined]
+        print(res.error)  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("result", [(Ok(1)), (Err(ValueError("example")))])
@@ -221,23 +242,38 @@ def test_result_error_or_none(result: Result[int, ValueError]) -> None:
         assert isinstance(result, Ok)
 
 
+@pytest.mark.parametrize("thing", [Some(1), Nothing()])
+def test_is_ok__Some(thing: Option[int]) -> None:
+    if is_ok(thing):
+        ok: Some[int] = thing
+        i: int = ok.value
+        assert i == 1
+    else:
+        not_ok: Nothing = thing
+        assert is_err(not_ok)
+
+
 @pytest.mark.parametrize("result", [(Ok(1)), (Err(ValueError("example")))])
 def test_is_ok(result: Result[int, ValueError]) -> None:
     if is_ok(result):
-        i: int = result.value
+        ok: Ok[int] = result
+        i: int = ok.value
         assert i == 1
     else:
-        e: ValueError = result.error
+        not_ok: Err[ValueError] = result
+        e: ValueError = not_ok.error
         assert e.args[0] == "example"
 
 
 @pytest.mark.parametrize("result", [(Ok(1)), (Err(ValueError("example")))])
 def test_is_err(result: Result[int, ValueError]) -> None:
     if is_err(result):
-        e: ValueError = result.error
+        err: Err[ValueError] = result
+        e: ValueError = err.error
         assert e.args[0] == "example"
     else:
-        i: int = result.value
+        ok: Ok[int] = result
+        i: int = ok.value
         assert i == 1
 
 
@@ -251,51 +287,51 @@ def test_value_or(result: Result[int, str]) -> None:
 
 
 @pytest.mark.parametrize("ok,result", [(True, Ok(3)), (False, Err("x"))])
-def test_Ok_is_ok(ok: bool, result: Result[int, str]) -> None:
+def test_Results_is_ok(ok: bool, result: Result[int, str]) -> None:
     if ok:
-        assert Ok.is_ok(result)
+        assert Results.is_ok(result)
         val: int = result.value
         assert val == 3
     else:
-        assert not Ok.is_ok(result)
+        assert not Results.is_ok(result)
 
 
 @pytest.mark.parametrize("ok,result", [(True, Ok(3)), (False, Err("x"))])
-def test_Ok_is_ok_and(ok: bool, result: Result[object, str]) -> None:
+def test_Results_is_ok_and(ok: bool, result: Result[object, str]) -> None:
     def is_int(x: object) -> TypeIs[int]:
         return isinstance(x, int)
 
     if ok:
-        assert Ok.is_ok_and(result, is_int)
+        assert Results.is_ok_and(result, is_int)
         val: int = result.value
         assert val == 3
     else:
-        assert not Ok.is_ok_and(result, is_int)
+        assert not Results.is_ok_and(result, is_int)
         type_error: Err[Any] = result  # type: ignore[assignment]  # noqa: F841
 
 
 @pytest.mark.parametrize("ok,result", [(True, Ok(3)), (False, Err("x"))])
-def test_Err_is_err(ok: bool, result: Result[int, str]) -> None:
+def test_Results_is_err(ok: bool, result: Result[int, str]) -> None:
     if ok:
-        assert not Err.is_err(result)
+        assert not Results.is_err(result)
     else:
-        assert Err.is_err(result)
+        assert Results.is_err(result)
         error: str = result.error
         assert error == "x"
 
 
 @pytest.mark.parametrize("ok,result", [(True, Ok(3)), (False, Err("x"))])
-def test_Err_is_err_and(ok: bool, result: Result[int, str | bytes]) -> None:
+def test_Results_is_err_and(ok: bool, result: Result[int, str | bytes]) -> None:
     def is_str(x: str | bytes) -> TypeIs[str]:
         return isinstance(x, str)
 
     if ok:
-        assert not Err.is_err_and(result, is_str)
+        assert not Results.is_err_and(result, is_str)
         # This must be a type error — we only know the result does not contain a
         # str, not that it is an Ok.
         type_error: Ok[Any] = result  # type: ignore[assignment]  # noqa: F841
     else:
-        assert Err.is_err_and(result, is_str)
+        assert Results.is_err_and(result, is_str)
         error: str = result.error
         assert error == "x"
 
@@ -305,7 +341,8 @@ def test_Result_flatten() -> None:
     assert flat_ok == Ok(2)
     flat_err: Err[str] = Ok(Err("x")).flatten()
     assert flat_err == Err("x")
-    flat_other: list[Result[int, str]] = [r.flatten() for r in [Ok(2), Err("x")]]
+    results: list[Result[int, str]] = [Ok(2), Err("x")]
+    flat_other: list[Result[int, str]] = [r.flatten() for r in results]
     assert flat_other == [Ok(2), Err("x")]
 
     assert Ok(Ok(2)).flatten() == Ok(2)

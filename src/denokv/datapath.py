@@ -530,9 +530,16 @@ def pack_key_range(
     only be used to evaluate start/end of range queries, not as actual key
     values.
     """
-    packed_start = pack_key(start) if start is not None else pack_key(prefix or ())
+    packed_prefix: bytes | None = None
+    packed_start = (
+        pack_key(start)
+        if start is not None
+        else (packed_prefix := pack_key(prefix or ()))
+    )
     packed_end = (
-        pack_key(end) if end is not None else (pack_key(prefix or ()) + b"\xff")
+        (packed_start if start is end else pack_key(end))
+        if end is not None
+        else ((packed_prefix or pack_key(prefix or ())) + b"\xff")
     )
     # The datapath protocol includes the start, so if we want to exclude it we
     # need to increment the start key to start from the next key after it.

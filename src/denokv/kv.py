@@ -1061,11 +1061,11 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
         endpoint: EndpointInfo
         """The KV database endpoint that serviced the read request."""
 
-    __kv: Option[Kv]
-    __state: ReadState
-    __selections: list[KeySelector]
-    __results: Option[KvReadGroupResult]
-    __read_task: asyncio.Task[KvReadGroupResult] | None
+    _kv: Option[Kv]
+    _state: ReadState
+    _selections: list[KeySelector]
+    _results: Option[KvReadGroupResult]
+    _read_task: asyncio.Task[KvReadGroupResult] | None
     default_consistency: ConsistencyLevel
     _next_task_id: Final = itertools.count().__next__
 
@@ -1074,43 +1074,43 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
         kv: Kv | None = None,
         default_consistency: ConsistencyLevel | None = ConsistencyLevel.STRONG,
     ) -> None:
-        self.__state = KvReadGroup.ReadState.UNREAD
-        self.__kv = Some(kv) if kv else Nothing()
-        self.__selections = []
-        self.__results = Nothing()
-        self.__read_task = None
+        self._state = KvReadGroup.ReadState.UNREAD
+        self._kv = Some(kv) if kv else Nothing()
+        self._selections = []
+        self._results = Nothing()
+        self._read_task = None
         self.default_consistency = default_consistency or ConsistencyLevel.STRONG
         self._maybe_progress_from_configuring_to_unread()
 
     @property
     def kv(self) -> Option[Kv]:
-        return self.__kv
+        return self._kv
 
     @property
     def state(self) -> ReadState:
-        return self.__state
+        return self._state
 
     @property
     def selections(self) -> Sequence[KeySelector]:
-        return tuple(self.__selections)
+        return tuple(self._selections)
 
     # TODO: do we really need to allow mutating kv and selections after init?
     def set_kv(self, kv: Kv) -> None:
-        if is_ok(self.__kv):
+        if is_ok(self._kv):
             raise ValueError("kv has already been set")
-        self.__kv = Some(kv)
+        self._kv = Some(kv)
         self._maybe_progress_from_configuring_to_unread()
 
     def add_selection(self, key_selector: KeySelector) -> None:
-        if self.__state > KvReadGroup.ReadState.UNREAD:
+        if self._state > KvReadGroup.ReadState.UNREAD:
             raise InvalidStateError("cannot add selections after reading")
-        self.__selections.append(key_selector)
+        self._selections.append(key_selector)
 
     def _maybe_progress_from_configuring_to_unread(self) -> None:
-        if self.__state is not KvReadGroup.ReadState.CONFIGURING:
+        if self._state is not KvReadGroup.ReadState.CONFIGURING:
             return
-        if is_ok(self.__kv):
-            self.__state = KvReadGroup.ReadState.UNREAD
+        if is_ok(self._kv):
+            self._state = KvReadGroup.ReadState.UNREAD
 
     async def read(self) -> KvReadGroupResult:
         """
@@ -1140,26 +1140,26 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
             Errors from asyncio (like cancellation) or errors thrown from calls
             to the selectors' KeySelector.get_key_selection() method are raised.
         """
-        results = self.__results.value_or(None)
+        results = self._results.value_or(None)
         if results:
             return results
-        kv = self.__kv.value_or(None)
+        kv = self._kv.value_or(None)
         if not kv:
             raise InvalidStateError("kv must be set before reading")
-        read_task = self.__read_task
+        read_task = self._read_task
         if read_task is not None:
             return await read_task
 
         def on_done(task: asyncio.Task[KvReadGroupResult]) -> None:
-            assert self.__state is KvReadGroup.ReadState.READING
+            assert self._state is KvReadGroup.ReadState.READING
             if task.cancelled() or task.exception() is not None:
-                self.__state = KvReadGroup.ReadState.FAILED
+                self._state = KvReadGroup.ReadState.FAILED
             else:
-                self.__state = KvReadGroup.ReadState.READ
+                self._state = KvReadGroup.ReadState.READ
 
         async def do_read() -> KvReadGroupResult:
             consistency = self.default_consistency
-            selections = self.__selections
+            selections = self._selections
 
             selections_ranges = list[tuple[KeySelector, tuple[ReadRange, ...]]]()
             for s in selections:
@@ -1207,9 +1207,9 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
                 )
             )
 
-        assert self.__state is KvReadGroup.ReadState.UNREAD
-        self.__state = KvReadGroup.ReadState.READING
-        self.__read_task = read_task = asyncio.create_task(
+        assert self._state is KvReadGroup.ReadState.UNREAD
+        self._state = KvReadGroup.ReadState.READING
+        self._read_task = read_task = asyncio.create_task(
             do_read(), name=f"KvReadGroup.read-{KvReadGroup._next_task_id()}"
         )
         read_task.add_done_callback(on_done)
@@ -1223,7 +1223,7 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
         `.read()` (`.state` must be `READ`), otherwise this raises
         `asyncio.InvalidState`.
         """
-        if (state := self.__state) is not KvReadGroup.ReadState.READ:
+        if (state := self._state) is not KvReadGroup.ReadState.READ:
             err = InvalidStateError(
                 f"Attempted to access the result of KvReadGroup in state "
                 f"{state}, state must be READ."
@@ -1234,11 +1234,11 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
                 "before accessing the read result.",
             )
             raise err
-        assert is_ok(self.__results)
-        return self.__results.value
+        assert is_ok(self._results)
+        return self._results.value
 
     def _require_selector_to_be_in_group(self, selector: KeySelector) -> None:
-        if selector not in self.__selections:
+        if selector not in self._selections:
             # raise because this is programmer error.
             raise LookupError("selector is not part of this KvReadGroup")
 

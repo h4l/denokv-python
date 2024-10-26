@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -54,9 +55,26 @@ class DatabaseMetadata:
     expires_at: datetime
 
 
+@functools.total_ordering
 class ConsistencyLevel(StrEnum):
+    """
+    A read consistency requirement for a Deno KV Database server endpoint.
+
+    Examples
+    --------
+    Levels are ordered by amount of consistency — strong greater than eventual.
+
+    >>> assert ConsistencyLevel.STRONG > ConsistencyLevel.EVENTUAL
+    >>> assert ConsistencyLevel.EVENTUAL < ConsistencyLevel.STRONG
+    """
+
     STRONG = "strong"
     EVENTUAL = "eventual"
+
+    def __lt__(self, value: object) -> bool:
+        if not isinstance(value, ConsistencyLevel):
+            return NotImplemented
+        return self is ConsistencyLevel.EVENTUAL and value is ConsistencyLevel.STRONG
 
 
 @dataclass(frozen=True, **slots_if310())

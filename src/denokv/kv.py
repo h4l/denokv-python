@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
+import functools
 import itertools
 from abc import ABC
 from abc import abstractmethod
+from asyncio import InvalidStateError
+from asyncio import Task
 from base64 import urlsafe_b64decode
 from base64 import urlsafe_b64encode
 from binascii import unhexlify
@@ -61,6 +63,7 @@ from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._pycompat.dataclasses import FrozenAfterInitDataclass
 from denokv._pycompat.dataclasses import slots_if310
 from denokv._pycompat.enum import EvalEnumRepr
+from denokv._pycompat.exceptions import add_note
 from denokv._pycompat.protobuf import enum_name
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
@@ -1025,13 +1028,20 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
     returns the result.
     """
 
+    @functools.total_ordering
     class ReadState(Enum):
         """The state of a KvReadGroup."""
 
-        UNREAD = "UNREAD"
-        READING = "READING"
-        READ = "READ"
-        FAILED = "FAILED"
+        CONFIGURING = 0
+        UNREAD = 1
+        READING = 2
+        FAILED = 3
+        READ = 4
+
+        def __lt__(self, other: object) -> bool:
+            if not isinstance(other, type(self)):
+                return NotImplemented
+            return self.value < other.value
 
     @dataclass(frozen=True, **slots_if310())
     class ReadResults:
@@ -1064,12 +1074,13 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
         kv: Kv | None = None,
         default_consistency: ConsistencyLevel | None = ConsistencyLevel.STRONG,
     ) -> None:
-        self.__kv = Some(kv) if kv else Nothing()
         self.__state = KvReadGroup.ReadState.UNREAD
+        self.__kv = Some(kv) if kv else Nothing()
         self.__selections = []
         self.__results = Nothing()
         self.__read_task = None
         self.default_consistency = default_consistency or ConsistencyLevel.STRONG
+        self._maybe_progress_from_configuring_to_unread()
 
     @property
     def kv(self) -> Option[Kv]:
@@ -1088,11 +1099,18 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
         if is_ok(self.__kv):
             raise ValueError("kv has already been set")
         self.__kv = Some(kv)
+        self._maybe_progress_from_configuring_to_unread()
 
     def add_selection(self, key_selector: KeySelector) -> None:
-        if self.__state is not KvReadGroup.ReadState.UNREAD:
-            raise RuntimeError("cannot add selections after reading")
+        if self.__state > KvReadGroup.ReadState.UNREAD:
+            raise InvalidStateError("cannot add selections after reading")
         self.__selections.append(key_selector)
+
+    def _maybe_progress_from_configuring_to_unread(self) -> None:
+        if self.__state is not KvReadGroup.ReadState.CONFIGURING:
+            return
+        if is_ok(self.__kv):
+            self.__state = KvReadGroup.ReadState.UNREAD
 
     async def read(self) -> KvReadGroupResult:
         """
@@ -1127,7 +1145,7 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
             return results
         kv = self.__kv.value_or(None)
         if not kv:
-            raise RuntimeError("kv must be set before reading")
+            raise InvalidStateError("kv must be set before reading")
         read_task = self.__read_task
         if read_task is not None:
             return await read_task
@@ -1197,12 +1215,45 @@ class KvReadGroup(Awaitable["KvReadGroupResult"]):
         read_task.add_done_callback(on_done)
         return await read_task
 
-    async def read_for_selector(self, selector: KeySelector) -> KeySelectorGroupResult:
+    def result(self) -> KvReadGroupResult:
+        """
+        Get the result of the group's previously-completed KV database read.
+
+        The group must have already been successfully awaited or read with
+        `.read()` (`.state` must be `READ`), otherwise this raises
+        `asyncio.InvalidState`.
+        """
+        if (state := self.__state) is not KvReadGroup.ReadState.READ:
+            err = InvalidStateError(
+                f"Attempted to access the result of KvReadGroup in state "
+                f"{state}, state must be READ."
+            )
+            add_note(
+                err,
+                "This group (or an object linked to it) must be awaited "
+                "before accessing the read result.",
+            )
+            raise err
+        assert is_ok(self.__results)
+        return self.__results.value
+
+    def _require_selector_to_be_in_group(self, selector: KeySelector) -> None:
         if selector not in self.__selections:
             # raise because this is programmer error.
             raise LookupError("selector is not part of this KvReadGroup")
 
-        read_result: KvReadGroupResult = await self.read()
+    async def read_for_selector(self, selector: KeySelector) -> KeySelectorGroupResult:
+        self._require_selector_to_be_in_group(selector)
+        return self._extract_selector_result(await self.read(), selector)
+
+    def result_for_selector(self, selector: KeySelector) -> KeySelectorGroupResult:
+        return self._extract_selector_result(self.result(), selector)
+
+    def _extract_selector_result(
+        self, read_result: KvReadGroupResult, selector: KeySelector
+    ) -> KeySelectorGroupResult:
+        self._require_selector_to_be_in_group(selector)
+
         if not is_ok(read_result):
             return read_result
 
@@ -1237,26 +1288,127 @@ KeySelectorGroupResult: TypeAlias = Result[
 
 # Can we use the same wrapping mechanism to "extend" the abstract selection, to
 # specialise/convert the read type, rather than subclassing?
+@dataclass(**slots_if310(), init=False)
 class AbstractSelection(Awaitable[_T_co], KeySelector, Generic[_T_co], ABC):
     _group: Option[KvReadGroup]
-    _result: Option[_T_co]
-    _read_lock: asyncio.Lock | None
 
-    _handle_selection_read_result_is_async_: ClassVar[bool]
+    def __init__(self, *, group: KvReadGroup | None = None) -> None:
+        self._group = Nothing() if group is None else Some(group)
 
-    def __init_subclass__(
-        cls, handle_selection_read_result_is_async: bool | None = None, **kwargs: Any
-    ) -> None:
-        super().__init_subclass__(**kwargs)
+    def set_group(self, group: KvReadGroup) -> None:
+        if is_ok(self._group):
+            raise ValueError("group has already been set")
+        self._group = Some(group)
 
-        cls._handle_selection_read_result_is_async_ = (
-            inspect.iscoroutinefunction(cls._handle_selection_read_result_)
-            if handle_selection_read_result_is_async is None
-            else handle_selection_read_result_is_async
-        )
+    @property
+    @abstractmethod
+    def state(self) -> KvReadGroup.ReadState: ...
+
+    @abstractmethod
+    async def read(self) -> _T_co: ...
+
+    @abstractmethod
+    def result(self) -> _T_co: ...
+
+    def __await__(self) -> Generator[Any, Any, _T_co]:
+        result = yield from self.read().__await__()
+        return result
+
+
+@dataclass(**slots_if310(), init=False)
+class AbstractAsyncSelection(AbstractSelection[_T_co]):
+    """A KV Selection that asynchronously converts the read result to its value."""
+
+    _result: Task[_T_co] | None
+    _next_task_id: Final[Callable[[], int]] = itertools.count().__next__
 
     def __init__(self) -> None:
-        pass
+        super(AbstractAsyncSelection, self).__init__()
+        self._result = None
+
+    @property
+    def state(self) -> KvReadGroup.ReadState:
+        if (result := self._result) is not None:
+            if not result.done():
+                return KvReadGroup.ReadState.READING
+            elif result.cancelled() or result.exception() is not None:
+                return KvReadGroup.ReadState.FAILED
+            return KvReadGroup.ReadState.READ
+
+        group_state = self._group.map(lambda g: g.state).value_or(
+            KvReadGroup.ReadState.CONFIGURING
+        )
+        # The group may be READING, but because we need to handle the result
+        # asynchronously, we need to be read ourselves to be READING.
+        return min(KvReadGroup.ReadState.UNREAD, group_state)
+
+    async def read(self) -> _T_co:
+        if self._result is not None:
+            return await self._result
+
+        group = self._group.value_or(None)
+        if group is None:
+            raise InvalidStateError(
+                f"attempted to read {type(self).__name__} without an attached "
+                "KvReadGroup"
+            )
+        raw_result = await group.read_for_selector(self)
+
+        # value may have been calculated by another caller while awaiting
+        if self._result is not None:
+            return await self._result
+
+        self._result = result = asyncio.create_task(
+            self._handle_selection_read_result_(
+                raw_result,
+                kv=group.kv.or_raise(
+                    AssertionError, "group must have kv after reading"
+                ),
+            ),
+            name=f"{type(self).__name__}._handle_selection_read_result_{self._next_task_id()}",
+        )
+        return await result
+
+    def result(self) -> _T_co:
+        if not self._result or not self._result.done():
+            err = InvalidStateError(f"{type(self).__name__} has not finished reading")
+            add_note(
+                err, f"Await this {type(self).__name__} before accessing the result."
+            )
+            raise err
+        return self._result.result()
+
+    @abstractmethod
+    async def _handle_selection_read_result_(
+        self, result: KeySelectorGroupResult, *, kv: Kv
+    ) -> _T_co:
+        """
+        Convert the values read from our selected keys, or report the error.
+
+        Subclasses must implement this method to handle the result of reading
+        keys requested by `self.get_key_selection()`.
+
+        The results value is either an `Err` containing details of a failure to
+        read from the KV database, or an `Ok` containing a
+        `KeySelectorReadResults` object containing the values and other metadata.
+        """
+
+
+@dataclass(**slots_if310(), init=False)
+class AbstractSyncSelection(AbstractSelection[_T_co]):
+    """A KV Selection that synchronously converts the read result to its value."""
+
+    _result: Option[_T_co]
+
+    def __init__(self, *, group: KvReadGroup | None = None) -> None:
+        super(AbstractSyncSelection, self).__init__(group=group)
+        self._result = Nothing()
+
+    @property
+    def state(self) -> KvReadGroup.ReadState:
+        return self._group.map(lambda group: group.state).value_or(
+            KvReadGroup.ReadState.CONFIGURING
+        )
 
     async def read(self) -> _T_co:
         if is_ok(self_result := self._result):
@@ -1264,7 +1416,7 @@ class AbstractSelection(Awaitable[_T_co], KeySelector, Generic[_T_co], ABC):
 
         group = self._group.value_or(None)
         if group is None:
-            raise RuntimeError(
+            raise InvalidStateError(
                 f"attempted to read {type(self).__name__} without an attached "
                 "KvReadGroup"
             )
@@ -1274,86 +1426,141 @@ class AbstractSelection(Awaitable[_T_co], KeySelector, Generic[_T_co], ABC):
         if is_ok(self_result := self._result):
             return self_result.value
 
-        if not self._handle_selection_read_result_is_async_:
-            value = cast(_T_co, self._handle_selection_read_result_(raw_result))
-            self._result = Some(value)
-            return value
+        value = self._handle_selection_read_result_(
+            raw_result,
+            kv=group.kv.or_raise(AssertionError, "group must have kv after reading"),
+        )
+        self._result = Some(value)
+        return value
 
-        if self._read_lock is None:
-            self._read_lock = asyncio.Lock()
-        async with self._read_lock:
-            # Use the value if another caller read the value while we were locked
-            if is_ok(self_result := self._result):
-                return self_result.value
-
-            value = await cast(
-                Awaitable[_T_co], self._handle_selection_read_result_(raw_result)
+    def result(self) -> _T_co:
+        state = self.state
+        if state <= KvReadGroup.ReadState.READING:
+            err = InvalidStateError(f"{type(self).__name__} has not finished reading")
+            add_note(
+                err,
+                f"Await this {type(self).__name__} or its KvReadGroup before "
+                f"accessing the result.",
             )
-            self._result = Some(value)
-            return value
-            # lock is no longer needed, but we should keep it as it could be the
-            # only thing referencing tasks waiting for the result.
+            raise err
+
+        if is_ok(self._result):
+            return self._result.value
+
+        group = self._group.or_raise(AssertionError, "group must be set after reading")
+        raw_result = group.result_for_selector(self)
+
+        value = self._handle_selection_read_result_(
+            raw_result,
+            kv=group.kv.or_raise(AssertionError, "group must have kv after reading"),
+        )
+        self._result = Some(value)
+        return value
 
     @abstractmethod
     def _handle_selection_read_result_(
-        self, result: KeySelectorGroupResult
-    ) -> _T_co | Awaitable[_T_co]:
-        """
-        Convert the values read from our selected keys, or report the error.
+        self, result: KeySelectorGroupResult, *, kv: Kv
+    ) -> _T_co:
+        pass
 
-        Implementations of AbstractSelection must implement this method to
-        handle the result of reading keys requested by `self.get_key_selection()`.
-
-        The results value is either an `Err` containing details of a failure to
-        read from the KV database, or an `Ok` containing a
-        `KeySelectorReadResults` object containing the values and other metadata.
-
-        This function can be sync or async.
-        """
-
-    def __await__(self) -> Generator[Any, Any, _T_co]:
-        result = yield from self.read().__await__()
-        return result
+    _handle_selection_read_result_.__doc__ = (
+        AbstractAsyncSelection._handle_selection_read_result_.__doc__
+    )
 
 
-# How should we handle specialising the value type of this?
-
-# TODO: should we have a distinct read path for sync selections? So that we can
-#  dynamically populate state, value, versionstamp from @property access after
-#  the group has been loaded?
-
-@dataclass(frozen=True, **slots_if310())
-class KeySelection(AbstractSelection[object], Generic[AnyKvKeyT]):
-    key: AnyKvKeyT
-    value: object | None = field(default=None, init=False)
-    versionstamp: VersionStamp | None = field(default=None, init=False)
+@dataclass(**slots_if310(), init=False)
+class KeySelection(AbstractSyncSelection[object], Generic[AnyKvKeyT]):
+    _key: tuple[AnyKvKeyT, tuple[bytes, bytes] | None]
+    _versionstamp: VersionStamp | None
     required_consistency: ConsistencyLevel | None = field(default=None, kw_only=True)
 
+    def __init__(
+        self,
+        key: AnyKvKeyT,
+        *,
+        required_consistency: ConsistencyLevel | None = None,
+        group: KvReadGroup | None = None,
+    ) -> None:
+        super().__init__(group=group)
+        self._key = key, None
+        self._versionstamp = None
+        self.required_consistency = required_consistency
+
     @property
-    def state(self) ->
+    def key(self) -> AnyKvKeyT:
+        return self._key[0]
+
+    # I think it'd be best to use methods to get value and versionstamp. They
+    # should raise with errors from KV if reading failed.
+    def value(self) -> object:
+        return self.result()
+
+    def versionstamp(self) -> VersionStamp | None:
+        if not is_ok(self._result):
+            self.result()
+        return self._versionstamp
+
+    def _get_key_range(self) -> tuple[bytes, bytes]:
+        key, key_range = self._key
+        if key_range is None:
+            key_range = pack_key_range(start=key, end=key, exclude_end=True)
+            self._key = (key, key_range)
+        return key_range
 
     def get_key_selection(self) -> Sequence[ReadRange] | KeySelector.KeySelection:
-        start, end = pack_key_range(start=self.key, end=self.key, exclude_end=True)
-        ranges = dp_protobuf.ReadRange(start=start, end=end, limit=1)
+        start, end = self._get_key_range()
+        ranges = [dp_protobuf.ReadRange(start=start, end=end, limit=1)]
         if self.required_consistency is None:
             return ranges
         return KeySelector.KeySelection(
-            ranges=ranges, required_consistency=self.required_consistency
+            ranges=ranges, required_consistency=Some(self.required_consistency)
         )
 
-    @property
-    def v8_decoder(self) -> Option[Decoder]:
-        return self._group.map(lambda g: g.kv).map(lambda kv: kv.v8_decoder)
-
-    def _read_selection_from_group_(self, result: KeySelectorGroupResult) -> object:
+    def _handle_selection_read_result_(
+        self, result: KeySelectorGroupResult, *, kv: Kv
+    ) -> object:
         if is_err(result):
             raise result.error
         read_results = result.value
 
-        read_results.selection_result
-        if is_err(selector_group_result):
-            raise selector_group_result.error
-        value = selector_group_result.value
+        assert len(read_results.selection_result) == 1
+        (range_values,) = read_results.selection_result
+
+        if len(range_values) == 0:
+            self._versionstamp = None
+            return None
+        if len(range_values) != 1:
+            raise ProtocolViolation(
+                f"Server responded with {len(range_values)} values to "
+                f"read for exact key {self.key!r}",
+                data=result,
+                endpoint=read_results.endpoint,
+            )
+        raw_kv_entry = range_values[0]
+        key_range_start, _ = self._get_key_range()
+        if raw_kv_entry.key != key_range_start:
+            raise ProtocolViolation(
+                f"Server responded to read for exact key "
+                f"{key_range_start!r} with key {raw_kv_entry.key!r}",
+                data=result,
+                endpoint=read_results.endpoint,
+            )
+
+        parse_result = parse_protobuf_kv_entry(
+            raw_kv_entry, v8_decoder=kv.v8_decoder, le64_type=KvU64
+        )
+        if isinstance(parse_result, Err):
+            raise ProtocolViolation(
+                f"Server responded to Data Path request with invalid "
+                f"value: {parse_result.error}",
+                data=raw_kv_entry,
+                endpoint=read_results.endpoint,
+            ) from parse_result.error
+        # We don't need the result's key because we keep the caller's key which
+        # may be a custom type.
+        parsed_key, parsed_value, parsed_versionstamp = parse_result.value
+        self._versionstamp = VersionStamp(parsed_versionstamp)
+        return parsed_value
 
 
 @dataclass(frozen=True, **slots_if310())

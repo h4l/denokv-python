@@ -66,6 +66,8 @@ from denokv.kv import AuthenticatorFn
 from denokv.kv import CachedValue
 from denokv.kv import DatabaseMetadataCache
 from denokv.kv import EndpointSelector
+from denokv.kv import KeySelection
+from denokv.kv import KeySelectionResult
 from denokv.kv import Kv
 from denokv.kv import KvEntry
 from denokv.kv import KvFlags
@@ -662,6 +664,95 @@ async def test_Kv_get__retries_retryable_snapshot_read_errors(
         for e in retry_errors[:-1]
         if e.auto_retry == AutoRetry.AFTER_METADATA_EXCHANGE
     )
+
+
+@pytest_mark_asyncio
+async def test_Kv_getv2__infers_return_of_selection_presentation(
+    kv: Kv, mock_snapshot_read: AsyncMock
+) -> None:
+    read_output = SnapshotReadOutput(
+        ranges=[
+            ReadRangeOutput(values=[pack_kv_entry(("a", 1), b"a1", versionstamp=11)]),
+            ReadRangeOutput(values=[]),
+        ],
+        read_disabled=False,
+        read_is_strongly_consistent=True,
+        status=SnapshotReadStatus.SR_SUCCESS,
+    )
+    mock_snapshot_read.side_effect = None
+    mock_snapshot_read.return_value = Ok(read_output)
+
+    a1 = kv.getv2(KeySelection(("a", 1)))
+    a2 = kv.getv2(KeySelection(("a", 2)), group=a1.read_result.group)
+
+    def use_key(key: tuple[str, int]) -> None:
+        assert key == ("a", 1)
+
+    use_key(a1.key)
+    assert a1.key == ("a", 1)
+    assert a2.key == ("a", 2)
+
+    a1_val = await a1
+    a2_val = await a2
+
+    mock_snapshot_read.assert_called_once()
+
+    assert a1_val == b"a1"
+    assert a1.value() == b"a1"
+    assert a1.versionstamp() == VersionStamp(11)
+
+    assert a2_val is None
+    assert a2.value() is None
+    assert a2.versionstamp() is None
+
+
+@pytest.mark.parametrize("read_via_group", [True, False])
+@pytest_mark_asyncio
+async def test_Kv_getv2__returns_group_containing_selected_keys(
+    kv: Kv, mock_snapshot_read: AsyncMock, read_via_group: bool
+) -> None:
+    read_output = SnapshotReadOutput(
+        ranges=[
+            ReadRangeOutput(values=[pack_kv_entry(("a", 1), b"a1", versionstamp=11)]),
+            ReadRangeOutput(values=[pack_kv_entry(("b", 2), b"b2", versionstamp=12)]),
+            ReadRangeOutput(values=[]),
+        ],
+        read_disabled=False,
+        read_is_strongly_consistent=True,
+        status=SnapshotReadStatus.SR_SUCCESS,
+    )
+
+    mock_snapshot_read.side_effect = None
+    mock_snapshot_read.return_value = Ok(read_output)
+
+    a1, b2, c3 = kv.getv2(("a", 1), ("b", 2), ("c", 3))
+
+    assert isinstance(a1, KeySelectionResult)
+    assert isinstance(b2, KeySelectionResult)
+    assert isinstance(c3, KeySelectionResult)
+
+    if read_via_group:
+        assert a1.read_result.group
+        await a1.read_result.group
+    else:
+        a1_value = await a1
+        b2_value = await b2
+        c3_value = await c3
+        assert (a1_value, b2_value, c3_value) == (b"a1", b"b2", None)
+
+    mock_snapshot_read.assert_called_once()
+
+    assert a1.key == ("a", 1)
+    assert b2.key == ("b", 2)
+    assert c3.key == ("c", 3)
+
+    assert a1.value() == b"a1"
+    assert b2.value() == b"b2"
+    assert c3.value() is None
+
+    assert a1.versionstamp() == VersionStamp(11)
+    assert b2.versionstamp() == VersionStamp(12)
+    assert c3.versionstamp() is None
 
 
 @pytest_mark_asyncio

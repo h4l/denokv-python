@@ -17,6 +17,7 @@ from enum import Enum
 from enum import Flag
 from enum import auto
 from functools import partial
+from itertools import chain
 from itertools import islice
 from os import environ
 from types import MappingProxyType
@@ -1105,9 +1106,47 @@ class KvReadGroup(Awaitable[Sequence[object]]):
         self._kv = Some(kv)
         self._maybe_progress_from_configuring_to_unread()
 
-    # TODO: we should store a mapping of selection => readresult
+    @overload
     def add_selection(
-        self, selection: AnyKvSelection[object] | AnyKvReadResult[object]
+        self,
+        selection_or_result: AnyKvSelection[object] | AnyKvReadResult[object],
+        /,
+    ) -> AnyKvReadResult[object]: ...
+
+    @overload
+    def add_selection(
+        self,
+        selection: AnyKvSelection[object],
+        read_result: AnyKvReadResult[object],
+    ) -> AnyKvReadResult[object]: ...
+
+    @overload
+    def add_selection(
+        self,
+        selection: AnyKvSelection[object],
+        read_result: None = None,
+    ) -> AnyKvReadResult[object]: ...
+
+    @overload
+    def add_selection(
+        self,
+        selection: None = None,
+        *,
+        read_result: AnyKvReadResult[object],
+    ) -> AnyKvReadResult[object]: ...
+
+    @overload
+    def add_selection(
+        self,
+        selection: AnyKvSelection[object] | None = None,
+        *,
+        read_result: AnyKvReadResult[object],
+    ) -> AnyKvReadResult[object]: ...
+
+    def add_selection(
+        self,
+        selection: AnyKvSelection[object] | AnyKvReadResult[object] | None = None,
+        read_result: AnyKvReadResult[object] | None = None,
     ) -> AnyKvReadResult[object]:
         """
         Register a selection to be read for and fulfilled by this read group.
@@ -1115,27 +1154,42 @@ class KvReadGroup(Awaitable[Sequence[object]]):
         The read group will read keys selected by this selection and provide the
         resulting values to the selection's result when the read completes.
         """
+        _selection: AnyKvSelection[object]
+        if selection is None:
+            if read_result is None:
+                raise TypeError("expected selection or read_result to be set")
+            _selection = read_result.selection
+        elif isinstance(selection, AnyKvReadResult):
+            if read_result is not None:
+                raise TypeError(
+                    "selection and read_result cannot both be AnyKvReadResult"
+                )
+            _selection, read_result = selection.selection, selection
+        else:
+            if read_result is not None and selection is not read_result.selection:
+                raise ValueError(
+                    "selection and read_result are both set, but "
+                    "read_result.selection is not the selection argument"
+                )
+            _selection = selection
+
         if self._state > KvReadGroup.ReadState.UNREAD:
             raise InvalidStateError("cannot add selections after reading")
 
+        current_read_result = self._selections.get(_selection)
+        if current_read_result is not None:
+            if read_result is not None and current_read_result is not read_result:
+                raise ValueError(
+                    "selection already exists with a different read result"
+                )
+            return current_read_result
+
         selection_result: AnyKvReadResult[object]
-        if isinstance(selection, AnyAsyncKvSelection):
-            if selection in self._selections:
-                return self._selections[selection]
-            selection_result = AsyncReadResult(selection)
-        elif isinstance(selection, AnySyncKvSelection):
-            if selection in self._selections:
-                return self._selections[selection]
-            selection_result = SyncReadResult(selection)
+        if isinstance(_selection, AnyAsyncKvSelection):
+            selection_result = AsyncReadResult(_selection)
         else:
-            selection_result = selection
-            selection = selection_result.selection
-            if (existing := self._selections.get(selection)) is not None:
-                if existing is not selection_result:
-                    raise ValueError(
-                        "selection already exists with different selection result"
-                    )
-                return existing
+            assert isinstance(_selection, AnySyncKvSelection)
+            selection_result = SyncReadResult(_selection)
 
         # We need to maintain a bi-directional relationship between group and
         # selection. Selections can raise from set_group() to reject being added
@@ -1146,8 +1200,8 @@ class KvReadGroup(Awaitable[Sequence[object]]):
         # selections added within the set_group() call.
         selection_count = len(self._selections)
         try:
-            assert selection not in self._selections
-            self._selections[selection] = selection_result
+            assert _selection not in self._selections
+            self._selections[_selection] = selection_result
             selection_result.set_group(self)
         except BaseException:
             # Because dicts maintain insertion order, new keys must be after
@@ -1596,10 +1650,25 @@ V = TypeVar("V")
 _PV_co = TypeVar("_PV_co", covariant=True)
 
 
+@runtime_checkable
 class ReadResultPresentationCreator(Protocol[U, _PV_co]):
     def create_result_presentation(
         self, read_result: AnyKvReadResult[U]
-    ) -> ReadResultPresentation[U, _PV_co]: ...
+    ) -> AnyKvReadPresentation[U, _PV_co]: ...
+
+
+_KvReadPresentationT_co = TypeVar(
+    "_KvReadPresentationT_co",
+    bound="AnyKvReadPresentation[Any, object]",
+    covariant=True,
+)
+
+
+@runtime_checkable  # FIXME: should make this type_check_only
+class InferReadResultPresentationCreatorReturn(Protocol[_KvReadPresentationT_co]):
+    def create_result_presentation(
+        self, read_result: AnyKvReadResult[Any]
+    ) -> _KvReadPresentationT_co: ...
 
 
 @runtime_checkable
@@ -1644,7 +1713,8 @@ def is_kv_selection(obj: object) -> TypeIs[AnyKvSelection[object]]:
     return isinstance(obj, (AnyAsyncKvSelection, AnySyncKvSelection))
 
 
-class ReadResultPresentation(Awaitable[_PV_co], Protocol[_T_co, _PV_co]):
+@runtime_checkable
+class AnyKvReadPresentation(Awaitable[_PV_co], Protocol[_T_co, _PV_co]):
     @property
     def read_result(self) -> AnyKvReadResult[_T_co]: ...
 
@@ -1689,7 +1759,6 @@ class KeySelection(
         (range_values,) = read_results.selection_result
 
         if len(range_values) == 0:
-            self._versionstamp = None
             return None
         if len(range_values) != 1:
             raise ProtocolViolation(
@@ -1726,7 +1795,7 @@ class KeySelection(
 
 @dataclass(frozen=True, eq=False, **slots_if310())
 class KeySelectionResult(
-    ReadResultPresentation[KvEntry[AnyKvKeyT, object] | None, object],
+    AnyKvReadPresentation[KvEntry[AnyKvKeyT, object] | None, object],
     Awaitable[object],
     Generic[AnyKvKeyT],
 ):
@@ -1736,6 +1805,9 @@ class KeySelectionResult(
     @property
     def key(self) -> AnyKvKeyT:
         return self.selector.key
+
+    def exists(self) -> bool:
+        return self.read_result.result() is not None
 
     # I think it'd be best to use methods to get value and versionstamp. They
     # should raise with errors from KV if reading failed.
@@ -2019,13 +2091,94 @@ class Kv:
             return normalize_key(key, bigints=False)  # type: ignore[return-value]
         return key
 
+    @overload
     def getv2(
         self,
-        *selectors: AnyKvKey | AnyKvReadResult[object],
+        read: InferReadResultPresentationCreatorReturn[_KvReadPresentationT_co],
+        /,
+        *,
+        reads: None = None,
         group: KvReadGroup | None = None,
-    ) -> KvReadGroup:
+    ) -> _KvReadPresentationT_co: ...
+
+    @overload
+    def getv2(
+        self,
+        read: AnyKvKey
+        | AnyKvSelection[object]
+        | AnyKvReadResult[object]
+        | AnyKvReadPresentation[object, object],
+        /,
+        *,
+        reads: None = None,
+        group: KvReadGroup | None = None,
+    ) -> AnyKvReadResult[object] | AnyKvReadPresentation[object, object]: ...
+
+    @overload
+    def getv2(
+        self,
+        *args: AnyKvKey
+        | AnyKvSelection[object]
+        | AnyKvReadResult[object]
+        | AnyKvReadPresentation[object, object],
+        reads: Iterable[
+            AnyKvKey
+            | AnyKvSelection[object]
+            | AnyKvReadResult[object]
+            | AnyKvReadPresentation[object, object]
+        ]
+        | None = None,
+        group: KvReadGroup | None = None,
+        consistency: ConsistencyLevel | None = None,
+    ) -> Sequence[AnyKvReadResult[object] | AnyKvReadPresentation[object, object]]: ...
+
+    def getv2(
+        self,
+        *args: AnyKvKey
+        | AnyKvSelection[object]
+        | AnyKvReadResult[object]
+        | AnyKvReadPresentation[object, object]
+        | InferReadResultPresentationCreatorReturn[_KvReadPresentationT_co],
+        reads: Iterable[
+            AnyKvKey
+            | AnyKvSelection[object]
+            | AnyKvReadResult[object]
+            | AnyKvReadPresentation[object, object]
+        ]
+        | None = None,
+        group: KvReadGroup | None = None,
+        consistency: ConsistencyLevel | None = None,
+    ) -> (
+        AnyKvReadResult[object]
+        | AnyKvReadPresentation[object, object]
+        | _KvReadPresentationT_co
+        | Sequence[AnyKvReadResult[object] | AnyKvReadPresentation[object, object]]
+    ):
+        normalised_reads: list[
+            tuple[
+                AnyKvSelection[object],
+                AnyKvReadResult[object] | None,
+                AnyKvReadPresentation[object, object] | None,
+            ]
+        ] = []
+        for r in chain(args, [] if reads is None else reads):
+            if isinstance(r, (AnyAsyncKvSelection, AnySyncKvSelection)):
+                normalised_reads.append((r, None, None))
+            elif isinstance(r, AnyKvReadResult):
+                normalised_reads.append((r.selection, r, None))
+            elif isinstance(r, AnyKvReadPresentation):
+                normalised_reads.append((r.read_result.selection, r.read_result, r))
+            else:
+                assert not isinstance(r, InferReadResultPresentationCreatorReturn)
+                normalised_reads.append(
+                    (KeySelection(r, required_consistency=consistency), None, None)
+                )
+
+        if len(normalised_reads) == 0:
+            return []
+
         if group is None:
-            group = KvReadGroup(kv=self)
+            group = KvReadGroup(kv=self, default_consistency=consistency)
         else:
             kv = group.kv.value_or(None)
             if kv is None:
@@ -2033,12 +2186,22 @@ class Kv:
             elif kv is not self:
                 raise ValueError("group has a different Kv linked")
 
-        for s in selectors:
-            if isinstance(s, AnyKvReadResult):
-                group.add_selection(s)
-            else:
-                group.add_selection(KeySelection(s))
-        return group
+        read_presentations: list[
+            AnyKvReadResult[object] | AnyKvReadPresentation[object, object]
+        ] = []
+        for selection, read_result, read_presentation in normalised_reads:
+            read_result = group.add_selection(selection, read_result)
+            if read_presentation is None and isinstance(
+                selection, ReadResultPresentationCreator
+            ):
+                read_presentation = selection.create_result_presentation(read_result)
+            read_presentations.append(
+                read_result if read_presentation is None else read_presentation
+            )
+
+        if reads is None and len(read_presentations) == 1:
+            return read_presentations[0]
+        return read_presentations
 
     # get(x), get(x, y), get(keys=[a, b, c])
     @overload

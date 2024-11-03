@@ -12,8 +12,11 @@ from enum import auto
 from typing import TYPE_CHECKING
 from typing import Awaitable
 from typing import Callable
+from typing import Container
 from typing import Final
 from typing import Protocol
+from typing import TypedDict
+from typing import overload
 from typing import runtime_checkable
 
 import aiohttp
@@ -44,6 +47,7 @@ if TYPE_CHECKING:
     from typing_extensions import TypeAlias
     from typing_extensions import TypeGuard
     from typing_extensions import TypeVar
+    from typing_extensions import Unpack
 
     KvKeyPiece: TypeAlias = "str | bytes | int | float | bool"
     KvKeyPieceT = TypeVar("KvKeyPieceT", bound=KvKeyPiece, default=KvKeyPiece)
@@ -61,6 +65,9 @@ if TYPE_CHECKING:
     KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
     AnyKvKey: TypeAlias = "KvKeyEncodable | KvKeyTuple"
     AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey, default=AnyKvKey)
+    AnyKvKeyT_co = TypeVar(
+        "AnyKvKeyT_co", bound=AnyKvKey, default=AnyKvKey, covariant=True
+    )
     AnyKvKeyT_con = TypeVar(
         "AnyKvKeyT_con", bound=AnyKvKey, default=AnyKvKey, contravariant=True
     )
@@ -81,9 +88,16 @@ else:
     KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
     AnyKvKey: TypeAlias = "KvKeyEncodable | KvKeyTuple"
     AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey)
+    AnyKvKeyT_co = TypeVar("AnyKvKeyT", bound=AnyKvKey, covariant=True)
     AnyKvKeyT_con = TypeVar("AnyKvKeyT_con", bound=AnyKvKey, contravariant=True)
 
 _T = TypeVar("_T")
+
+
+@runtime_checkable
+class KvKeyRangeEncodable(Container[AnyKvKey], Protocol):
+    def kv_key_range_bytes(self) -> tuple[bytes, bytes]: ...
+
 
 _LE64 = struct.Struct("<Q")
 """Little-endian 64-bit unsigned int format."""
@@ -474,7 +488,26 @@ def pack_key(key: AnyKvKey) -> bytes:
     return pack(key)
 
 
+class PackKeyRangeOptions(TypedDict, total=False):
+    """Keyword arguments of `pack_key_range()`."""
+
+    prefix: AnyKvKey | None
+    start: AnyKvKey | None
+    end: AnyKvKey | None
+    exclude_start: bool
+    exclude_end: bool
+
+
+@overload
+def pack_key_range(key_range: KvKeyRangeEncodable) -> tuple[bytes, bytes]: ...
+
+
+@overload
+def pack_key_range(**options: Unpack[PackKeyRangeOptions]) -> tuple[bytes, bytes]: ...
+
+
 def pack_key_range(
+    key_range: KvKeyRangeEncodable | None = None,
     *,
     prefix: AnyKvKey | None = None,
     start: AnyKvKey | None = None,
@@ -537,6 +570,9 @@ def pack_key_range(
     only be used to evaluate start/end of range queries, not as actual key
     values.
     """
+    if key_range is not None:
+        return key_range.kv_key_range_bytes()
+
     packed_prefix: bytes | None = None
     packed_start = (
         pack_key(start)

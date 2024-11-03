@@ -1,19 +1,40 @@
 from __future__ import annotations
 
+import functools
+from dataclasses import dataclass
+from dataclasses import field
 from typing import TYPE_CHECKING
+from typing import Any
+from typing import Final
+from typing import Generic
+from typing import Union
+from typing import cast
 from typing import overload
 
 from fdb.tuple import pack
 from fdb.tuple import unpack
 
+from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.typing import override
 from denokv.datapath import KV_KEY_PIECE_TYPES
+from denokv.datapath import AnyKvKey
+from denokv.datapath import AnyKvKeyT
+from denokv.datapath import AnyKvKeyT_co
 from denokv.datapath import KvKeyEncodable
 from denokv.datapath import KvKeyEncodableT
 from denokv.datapath import KvKeyPiece
+from denokv.datapath import KvKeyRangeEncodable
 from denokv.datapath import KvKeyTuple
+from denokv.datapath import PackKeyRangeOptions
+from denokv.datapath import is_any_kv_key
 from denokv.datapath import is_kv_key_tuple
+from denokv.datapath import pack_key
+from denokv.datapath import pack_key_range
+from denokv.result import Nothing
+from denokv.result import Some
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
     from typing_extensions import TypeAlias
     from typing_extensions import TypeVar
     from typing_extensions import TypeVarTuple
@@ -98,9 +119,286 @@ class KvKey(KvKeyEncodable, tuple[Unpack[Pieces]]):
                 f"Cannot create {cls.__name__} from packed key: {packed_key!r}: {e}"
             ) from e
 
+    def range_start(self, start: StartT) -> KvKeyRange[StartT, Exclude[Self]]:
+        """Get a key range from a `start` boundary up to but excluding this key."""
+        return KvKeyRange(start, Exclude(self))
+
+    def range_stop(self, stop: StopT) -> KvKeyRange[Include[Self], StopT]:
+        """Get a key range starting with this key up to the `stop` boundary."""
+        return KvKeyRange(Include(self), stop)
+
+    def range(self) -> KvKeyRange[Include[Self], IncludePrefix[Self]]:
+        """Get a key range starting with this key, including all suffixes of it."""
+        return KvKeyRange(Include(self), IncludePrefix(self))
+
 
 # Ideally the default parameter of the Pieces KvKeyTuple would make this the
 # default for KvKey (with no generic type), but mypy thinks it is
 # KvKey[*tuple[Any, ...]] when used without generic type args.
 DefaultKvKey: TypeAlias = "KvKey[Unpack[tuple[KvKeyPiece, ...]]]"
 """KvKey containing any number of key values of any allowed type."""
+
+
+@dataclass(frozen=True, **slots_if310())
+class _KeyBoundary(Generic[AnyKvKeyT_co]):
+    key: Final[AnyKvKeyT_co]  # type: ignore[misc]
+
+    @overload
+    def __init__(self: _KeyBoundary[AnyKvKeyT_co], key: AnyKvKeyT_co) -> None: ...
+
+    @overload
+    def __init__(
+        self: _KeyBoundary[KvKey[Unpack[Pieces]]], *pieces: Unpack[Pieces]
+    ) -> None: ...
+
+    def __init__(self, arg1: AnyKvKeyT_co | KvKeyPiece, *rest: KvKeyPiece) -> None:  # type: ignore[misc]
+        key: AnyKvKey
+        if is_any_kv_key(arg1):
+            key = arg1
+        else:
+            key = KvKey(cast(KvKeyPiece, arg1), *rest)
+        object.__setattr__(self, "key", key)
+
+    @property
+    def key_option(self) -> Some[AnyKvKeyT_co]:
+        return Some(self.key)
+
+    def range_start(self, start: StartT) -> KvKeyRange[StartT, Self]:  # type: ignore[type-var,unused-ignore]  # type-var because Self is not allowed to be the StopT type (but works anyway). unused-ignore because 3.9 does not detect the Self error.
+        return KvKeyRange(start, self)  # type: ignore[type-var,unused-ignore]
+
+    def range_stop(self, stop: StopT) -> KvKeyRange[Self, StopT]:  # type: ignore[type-var,unused-ignore]
+        return KvKeyRange(self, stop)  # type: ignore[type-var,unused-ignore]
+
+    def __repr__(self) -> str:
+        if isinstance(self.key, KvKey):
+            key = tuple.__repr__(self.key)[1:-1]
+        else:
+            key = repr(self.key)
+        return f"{type(self).__name__}({key})"
+
+
+class Include(_KeyBoundary[AnyKvKeyT_co]):
+    """KvKeyRange boundary that includes its key in the range."""
+
+    if TYPE_CHECKING:
+        # For some reason mypy only infers types of Pieces using new not init
+        @overload
+        def __new__(cls, key: AnyKvKeyT, /) -> Include[AnyKvKeyT]: ...  # type: ignore[overload-overlap]
+
+        @overload
+        def __new__(cls, *pieces: Unpack[Pieces]) -> Include[KvKey[Unpack[Pieces]]]: ...
+
+        def __new__(cls, *args: Any) -> Self: ...  # type: ignore[misc]
+
+    def range(self) -> KvKeyRange[Self, Self]:
+        """Get a key range including only this Include's key."""
+        return KvKeyRange(self, self)
+
+
+class IncludePrefix(_KeyBoundary[AnyKvKeyT_co]):
+    """KvKeyRange boundary that includes keys prefixed by its key in the range."""
+
+    if TYPE_CHECKING:
+        # For some reason mypy only infers types of Pieces using new not init
+        @overload
+        def __new__(cls, key: AnyKvKeyT, /) -> IncludePrefix[AnyKvKeyT]: ...  # type: ignore[overload-overlap]
+
+        @overload
+        def __new__(
+            cls, *pieces: Unpack[Pieces]
+        ) -> IncludePrefix[KvKey[Unpack[Pieces]]]: ...
+
+        def __new__(cls, *args: Any) -> Self: ...  # type: ignore[misc]
+
+    @override
+    def range_stop(self, stop: StopT) -> KvKeyRange[Include[AnyKvKeyT_co], StopT]:  # type: ignore[override]
+        return KvKeyRange(Include(self.key), stop)
+
+    def range(self) -> KvKeyRange[Include[AnyKvKeyT_co], Self]:
+        """
+        Create a key range that includes all child keys of this object's key.
+
+        Examples
+        --------
+        >>> r = IncludePrefix('a', 1).range()
+        >>> r
+        KvKeyRange(start=Include('a', 1), stop=IncludePrefix('a', 1))
+        >>> assert ('a', 0, 99) not in r
+        >>> assert ('a', 1) in r
+        >>> assert ('a', 1, 0) in r
+        >>> assert ('a', 1, 99) in r
+        >>> assert ('a', 2, 0) not in r
+        """
+        return KvKeyRange(Include(self.key), self)
+
+
+class Exclude(_KeyBoundary[AnyKvKeyT_co]):
+    """KvKeyRange boundary that excludes its key from the range."""
+
+    if TYPE_CHECKING:
+        # For some reason mypy only infers types of Pieces using new not init
+        @overload
+        def __new__(cls, key: AnyKvKeyT, /) -> Exclude[AnyKvKeyT]: ...  # type: ignore[overload-overlap]
+
+        @overload
+        def __new__(cls, *pieces: Unpack[Pieces]) -> Exclude[KvKey[Unpack[Pieces]]]: ...
+
+        def __new__(cls, *args: Any) -> Self: ...  # type: ignore[misc]
+
+    def range(self) -> KvKeyRange[Self, Self]:
+        """Get an empty key range that excludes this Exclude's key at the boundaries."""
+        return KvKeyRange(self, self)
+
+
+@dataclass(frozen=True, **slots_if310())
+class IncludeAll:
+    """KvKeyRange boundary that includes any key in the range."""
+
+    def __new__(cls) -> Self:
+        # Always return the same unique instance from IncludeAll()
+        instance = object.__new__(cls)
+
+        def __new__(cls: type[IncludeAll]) -> IncludeAll:
+            return instance
+
+        cls.__new__ = __new__  # type: ignore[method-assign,assignment]
+        return instance
+
+    @property
+    def key_option(self) -> Nothing:
+        return Nothing()
+
+    def range_start(self, start: StartT) -> KvKeyRange[StartT, Self]:
+        return KvKeyRange(start, self)
+
+    def range_stop(self, stop: StopT) -> KvKeyRange[Self, StopT]:
+        return KvKeyRange(self, stop)
+
+    @classmethod
+    def range(cls) -> KvKeyRange[IncludeAll, IncludeAll]:
+        """Get a key range that includes all keys."""
+        return KvKeyRange(IncludeAll(), IncludeAll())
+
+
+StartBoundary: TypeAlias = Union[
+    IncludeAll, Include[AnyKvKeyT_co], Exclude[AnyKvKeyT_co]
+]
+StopBoundary: TypeAlias = Union[
+    IncludeAll, Include[AnyKvKeyT], IncludePrefix[AnyKvKeyT], Exclude[AnyKvKeyT]
+]
+
+if TYPE_CHECKING:
+    StartT = TypeVar(
+        "StartT", bound=StartBoundary, default=StartBoundary, covariant=False
+    )
+    StartT_co = TypeVar(
+        "StartT_co", bound=StartBoundary, default=StartBoundary, covariant=True
+    )
+    StopT = TypeVar("StopT", bound=StopBoundary, default=StopBoundary, covariant=False)
+    StopT_co = TypeVar(
+        "StopT_co", bound=StopBoundary, default=StopBoundary, covariant=True
+    )
+else:
+    StartT = TypeVar("StartT", bound=StartBoundary, covariant=False)
+    StopT = TypeVar("StopT", bound=StopBoundary, covariant=False)
+    StartT_co = TypeVar("StartT_co", bound=StartBoundary, covariant=True)
+    StopT_co = TypeVar("StopT_co", bound=StopBoundary, covariant=True)
+
+
+@functools.total_ordering
+@dataclass(frozen=True, eq=False, **slots_if310())
+class KvKeyRange(KvKeyRangeEncodable, Generic[StartT_co, StopT_co]):
+    """
+    A range of KV key values, bounded by a start and end positions.
+
+    Examples
+    --------
+    >>> key_range = Include('a', 0).range_stop(Exclude('a', 10))
+    >>> key_range
+    KvKeyRange(start=Include('a', 0), stop=Exclude('a', 10))
+    >>> KvKey('a', 0) in key_range
+    True
+    >>> KvKey('a', 10) in key_range
+    False
+    >>> KvKey('a', 10) in key_range.range_stop(Include('a', 10))
+    True
+    """
+
+    start: Final[StartT_co] = field(default=cast(StartT_co, IncludeAll()))  # type: ignore[misc]
+    stop: Final[StopT_co] = field(default=cast(StopT_co, IncludeAll()))  # type: ignore[misc]
+    _packed: tuple[bytes, bytes] | None = field(
+        default=None, init=False, repr=False, hash=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        # Types don't allow IncludePrefix as start because it has the same
+        # effect as Include at the start position. But if it is used, we
+        # normalise it.
+        if isinstance(self.start, IncludePrefix):
+            object.__setattr__(self, "start", Include(self.start.key))
+
+        if not isinstance(self.start, (IncludeAll, Include, Exclude)):
+            raise TypeError("start must be IncludeAll, Include or Exclude")
+        if not isinstance(self.stop, (IncludeAll, Include, IncludePrefix, Exclude)):
+            raise TypeError(
+                "stop must be IncludeAll, Include, IncludePrefix or Exclude"
+            )
+
+    def range_start(self, start: StartT) -> KvKeyRange[StartT, StopT_co]:
+        """Get a key range with this range's stop and the provided `start`."""
+        return KvKeyRange(start, self.stop)
+
+    def range_stop(self, stop: StopT) -> KvKeyRange[StartT_co, StopT]:
+        """Get a key range with this range's start and the provided `stop`."""
+        return KvKeyRange(self.start, stop)
+
+    @override
+    def kv_key_range_bytes(self) -> tuple[bytes, bytes]:
+        if (packed := self._packed) is not None:
+            return packed
+
+        options = PackKeyRangeOptions()
+
+        start = self.start
+        if isinstance(start, Include):
+            options["start"] = start.key
+        elif isinstance(start, Exclude):
+            options["start"] = start.key
+            options["exclude_start"] = True
+        else:
+            assert isinstance(start, IncludeAll)
+            options["start"] = ()
+
+        stop = self.stop
+        if isinstance(stop, Include):
+            options["end"] = stop.key
+            options["exclude_end"] = False
+        elif isinstance(stop, Exclude):
+            options["end"] = stop.key
+        elif isinstance(stop, IncludePrefix):
+            options["prefix"] = stop.key
+        else:
+            assert isinstance(stop, IncludeAll)
+
+        object.__setattr__(self, "_packed", (packed := pack_key_range(**options)))
+        return packed
+
+    def __contains__(self, x: object, /) -> bool:
+        if not is_any_kv_key(x):
+            return False
+        packed = pack_key(x)
+        packed_start, packed_stop = pack_key_range(self)
+        return packed_start <= packed < packed_stop
+
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, KvKeyRange):
+            return NotImplemented
+        return self.kv_key_range_bytes() == value.kv_key_range_bytes()
+
+    def __hash__(self) -> int:
+        return hash(self.kv_key_range_bytes())
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, KvKeyRange):
+            return NotImplemented
+        return self.kv_key_range_bytes() < other.kv_key_range_bytes()

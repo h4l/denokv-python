@@ -627,7 +627,7 @@ async def test_snapshot_read__reads_expected_values(
         for res_range in result.value.ranges
     ]
     expected_result_ranges = [
-        [KvEntry(key, value, versionstamp=ver) for (key, value) in entries]
+        [KvEntry(KvKey(*key), value, versionstamp=ver) for (key, value) in entries]
         for entries in result_ranges
     ]
     assert actual_result_ranges == expected_result_ranges
@@ -644,7 +644,7 @@ async def test_snapshot_read__reads_expected_values(
                 value=b"foo",
             ),
             KvEntry(
-                key=("a",),
+                key=KvKey("a"),
                 value=b"foo",
                 versionstamp=VersionStamp("00000000000000000001"),
             ),
@@ -657,7 +657,7 @@ async def test_snapshot_read__reads_expected_values(
                 value=struct.pack("<Q", 15043183363527981566),
             ),
             KvEntry(
-                key=("a", 42, 1.0, True, b"b"),
+                key=KvKey("a", 42, 1.0, True, b"b"),
                 value=KvU64(15043183363527981566),
                 versionstamp=VersionStamp("000000000000000f0001"),
             ),
@@ -670,7 +670,7 @@ async def test_snapshot_read__reads_expected_values(
                 value=v8serialize.dumps("foo"),
             ),
             KvEntry(
-                key=("a",),
+                key=KvKey("a"),
                 value="foo",
                 versionstamp=VersionStamp("000000000000000f0001"),
             ),
@@ -1018,7 +1018,7 @@ def test_is_kv_key_tuple() -> None:
     assert is_kv_key_tuple(("a", 1, 1.0, True, b"b"))
     assert is_kv_key_tuple(cast(object, ("a", 1, 1.0, True, b"b")))
     assert not is_kv_key_tuple(((),))
-    assert is_kv_key_tuple(KvKey("x"))
+    assert not is_kv_key_tuple(KvKey("x"))
 
 
 def test_is_any_kv_key() -> None:

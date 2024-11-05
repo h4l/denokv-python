@@ -60,6 +60,8 @@ if TYPE_CHECKING:
 
     @runtime_checkable
     class KvKeyEncodable(Protocol):
+        __slots__ = ()
+
         def kv_key_bytes(self) -> bytes: ...
 
     KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)

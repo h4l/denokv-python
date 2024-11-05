@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import functools
+import sys
 from dataclasses import dataclass
 from dataclasses import field
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Final
 from typing import Generic
+from typing import Iterator
+from typing import Sequence
 from typing import Union
 from typing import cast
 from typing import overload
@@ -35,6 +38,7 @@ from denokv.result import Some
 
 if TYPE_CHECKING:
     from typing_extensions import Self
+    from typing_extensions import SupportsIndex
     from typing_extensions import TypeAlias
     from typing_extensions import TypeVar
     from typing_extensions import TypeVarTuple
@@ -51,28 +55,37 @@ else:
     Unpack = tuple  # hack to support py39 at runtime w/o typing_extensions
     Pieces = TypeVar("Pieces")  # hack to support py39 at runtime w/o typing_extensions
 
+_T_co = TypeVar("_T_co", covariant=True)
 
-class KvKey(KvKeyEncodable, tuple[Unpack[Pieces]]):
-    """
-    A key identifying a value in a Deno KV database.
 
-    KvKey is a tuple of key pieces — str, bytes, int, float or bool. Unlike a
-    plain tuple, KvKey's values are guaranteed to only be valid key values, and
-    int values are not coerced to float for JavaScript comparability when used
-    with [Kv] methods.
+class _KvKeyState:
+    _unpacked: KvKeyTuple
+    _packed: bytes | None
+    __slots__ = ("_unpacked", "_packed")
 
-    [Kv]: `denokv.kv.Kv`
-    """
-
-    # The Pieces TypeVarTuple cannot be bounded to KvKeyPiece elements, so this
-    # type can hold any element, but  only KvKeyPiece can exist at runtime.
-    def __new__(cls, *pieces: Unpack[Pieces]) -> KvKey[Unpack[Pieces]]:
+    def __init__(self, *pieces: KvKeyPiece) -> None:
+        self._unpacked = pieces
         if not is_kv_key_tuple(pieces):
             raise TypeError(
                 f"key contains types other than "
                 f"{', '.join(t.__name__ for t in KV_KEY_PIECE_TYPES)}: {pieces!r}"
             )
-        return tuple.__new__(KvKey, pieces)
+        self._packed = None
+
+    def __eq__(self, value: object) -> bool:
+        # We don't compare equal to plain key tuples, because the comparison
+        # is not symmetric and tuple's hash does not follow this equality.
+        if not isinstance(value, KvKeyEncodable):
+            return NotImplemented
+        # unpacked tuples don't compare correctly because python == and hash
+        # treats int and integer floats as the same, but FDB keys don't.
+        return self.kv_key_bytes() == pack_key(value)
+
+    def __hash__(self) -> int:
+        return hash((KvKeyEncodable, self.kv_key_bytes()))
+
+    def __repr__(self) -> str:
+        return f"KvKey{self._unpacked!r}"
 
     @overload
     @classmethod
@@ -100,7 +113,9 @@ class KvKey(KvKeyEncodable, tuple[Unpack[Pieces]]):
         return cls(*key)  # type: ignore[arg-type,return-value,unused-ignore]
 
     def kv_key_bytes(self) -> bytes:
-        return pack(self)  # type: ignore[arg-type]
+        if (packed := self._packed) is None:
+            self._packed = packed = pack(self._unpacked)
+        return packed
 
     @classmethod
     def from_kv_key_bytes(cls, packed_key: bytes) -> DefaultKvKey:
@@ -108,7 +123,7 @@ class KvKey(KvKeyEncodable, tuple[Unpack[Pieces]]):
         try:
             # If packed key contains types other than allowed by KvKeyPiece
             # then the constructor throws TypeError, so this is type-safe.
-            return cls(*unpack(packed_key))  # type: ignore[arg-type,return-value,unused-ignore]
+            kvkey = cls(*unpack(packed_key))  # type: ignore[arg-type]
         except ValueError as e:
             raise ValueError(
                 f"Cannot create {cls.__name__} from packed key: {packed_key!r}:"
@@ -118,6 +133,8 @@ class KvKey(KvKeyEncodable, tuple[Unpack[Pieces]]):
             raise ValueError(
                 f"Cannot create {cls.__name__} from packed key: {packed_key!r}: {e}"
             ) from e
+        kvkey._packed = packed_key  # pre-cache the packed representation
+        return kvkey  # type: ignore[return-value]
 
     def range_start(self, start: StartT) -> KvKeyRange[StartT, Exclude[Self]]:
         """Get a key range from a `start` boundary up to but excluding this key."""
@@ -130,6 +147,147 @@ class KvKey(KvKeyEncodable, tuple[Unpack[Pieces]]):
     def range(self) -> KvKeyRange[Include[Self], IncludePrefix[Self]]:
         """Get a key range starting with this key, including all suffixes of it."""
         return KvKeyRange(Include(self), IncludePrefix(self))
+
+    def include(self) -> Include[Self]:
+        """Get this key as an inclusive key range boundary."""
+        return Include(self)
+
+    def include_prefix(self) -> IncludePrefix[Self]:
+        """Get this key as an inclusive prefix key range boundary."""
+        return IncludePrefix(self)
+
+    def exclude(self) -> Exclude[Self]:
+        """Get this key as an exclusive key range boundary."""
+        return Exclude(self)
+
+    # Methods supported by tuple that we handle slightly differently
+    def __lt__(self, value: AnyKvKey, /) -> bool:
+        try:
+            return self.kv_key_bytes() < pack_key(value)
+        except TypeError:
+            return NotImplemented
+
+    def __le__(self, value: AnyKvKey, /) -> bool:
+        try:
+            return self.kv_key_bytes() <= pack_key(value)
+        except TypeError:
+            return NotImplemented
+
+    def __gt__(self, value: AnyKvKey, /) -> bool:
+        try:
+            return self.kv_key_bytes() > pack_key(value)
+        except TypeError:
+            return NotImplemented
+
+    def __ge__(self, value: AnyKvKey, /) -> bool:
+        try:
+            return self.kv_key_bytes() >= pack_key(value)
+        except TypeError:
+            return NotImplemented
+
+
+if TYPE_CHECKING:
+    # KvKey isn't actually a tuple subclass at runtime, because we need to store
+    # extra state on each instance to cache the packed representation. The tuple
+    # type does not allow adding extra __slots__. However we do want to use
+    # tuple-like per-element typing, but the only way to do this is to make the
+    # type checker think this is a tuple subtype — Python typing has no way to
+    # type a __getitem__ call as returning the per-item types — tuple is
+    # special-cased.
+
+    # We need ignore[misc] as _KvKeyState order methods like __le__ are broader.
+    class KvKey(_KvKeyState, tuple[Unpack[Pieces]]):  # type: ignore[misc]
+        """
+        A key identifying a value in a Deno KV database.
+
+        KvKey is a tuple of key pieces — str, bytes, int, float or bool. Unlike a
+        plain tuple, KvKey's values are guaranteed to only be valid key values, and
+        int values are not coerced to float for JavaScript comparability when used
+        with [Kv] methods.
+
+        [Kv]: `denokv.kv.Kv`
+        """
+
+        # The Pieces TypeVarTuple cannot be bounded to KvKeyPiece elements, so this
+        # type can hold any element, but  only KvKeyPiece can exist at runtime.
+        def __new__(cls, *pieces: Unpack[Pieces]) -> KvKey[Unpack[Pieces]]: ...
+
+        @overload
+        def __getitem__(self, index: SupportsIndex, /) -> KvKeyPiece: ...
+        @overload
+        def __getitem__(self, index: slice, /) -> KvKey[KvKeyTuple]: ...
+        def __getitem__(
+            self, index: slice | SupportsIndex, /
+        ) -> KvKey | KvKeyPiece: ...
+
+        def __add__(self, value: KvKeyTuple, /) -> KvKey: ...  # type: ignore[override]
+        def __mul__(self, value: SupportsIndex, /) -> KvKey: ...
+        def __rmul__(self, value: SupportsIndex, /) -> KvKey: ...
+
+else:
+
+    @Sequence.register
+    class KvKey(_KvKeyState):
+        """
+        A key identifying a value in a Deno KV database.
+
+        KvKey is a tuple of key pieces — str, bytes, int, float or bool. Unlike a
+        plain tuple, KvKey's values are guaranteed to only be valid key values, and
+        int values are not coerced to float for JavaScript comparability when used
+        with [Kv] methods.
+
+        [Kv]: `denokv.kv.Kv`
+        """
+
+        __slots__ = ()
+
+        def __len__(self) -> int:
+            return len(self._unpacked)
+
+        def __contains__(self, value: object, /) -> bool:
+            return value in self._unpacked
+
+        @overload
+        def __getitem__(self, index: SupportsIndex, /) -> KvKeyPiece: ...
+
+        @overload
+        def __getitem__(self, index: slice, /) -> Self: ...
+
+        def __getitem__(self, index: slice | SupportsIndex, /) -> Self | KvKeyPiece:
+            if isinstance(index, slice):
+                return KvKey(*self._unpacked[index])
+            return self._unpacked[index]
+
+        def __iter__(self) -> Iterator[KvKeyPiece]:
+            return iter(self._unpacked)
+
+        def __reversed__(self) -> Iterator[_T_co]:
+            return reversed(self._unpacked)
+
+        def __add__(self, value: AnyKvKey, /) -> KvKey[KvKeyTuple]:
+            if isinstance(value, KvKey):
+                return KvKey(*self._unpacked, *value._unpacked)
+            if is_kv_key_tuple(value):
+                return KvKey(*self._unpacked, *value)
+            return KvKey(*self._unpacked, *unpack(pack_key(value)))
+
+        def __mul__(self, value: SupportsIndex, /) -> KvKey[KvKeyTuple]:
+            return KvKey(*(self._unpacked * value))
+
+        def __rmul__(self, value: SupportsIndex, /) -> KvKey[KvKeyTuple]:
+            return KvKey(*(self._unpacked * value))
+
+        def count(self, value: Any, /) -> int:
+            return self._unpacked.count(value)
+
+        def index(
+            self,
+            value: object,
+            start: int = 0,
+            stop: int = sys.maxsize,
+            /,
+        ) -> int:
+            return self._unpacked.index(value, start, stop)
 
 
 # Ideally the default parameter of the Pieces KvKeyTuple would make this the
@@ -171,7 +329,7 @@ class _KeyBoundary(Generic[AnyKvKeyT_co]):
 
     def __repr__(self) -> str:
         if isinstance(self.key, KvKey):
-            key = tuple.__repr__(self.key)[1:-1]
+            key = repr(tuple(self.key))[1:-1]
         else:
             key = repr(self.key)
         return f"{type(self).__name__}({key})"

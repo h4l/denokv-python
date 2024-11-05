@@ -67,6 +67,7 @@ from denokv.kv import KvU64
 from denokv.kv import VersionStamp
 from denokv.kv import normalize_key
 from denokv.kv import open_kv
+from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
@@ -954,7 +955,7 @@ async def test_Kv_list__retries_retryable_snapshot_read_errors(
         results.append((kv_entry.key, kv_entry.value, kv_entry.versionstamp))
 
     assert results == [
-        (("a", x), f"x{x}".encode(), VersionStamp(1)) for x in range(1, 5)
+        (KvKey("a", x), f"x{x}".encode(), VersionStamp(1)) for x in range(1, 5)
     ]
     assert len(auth_fn.mock_calls) == 7
 

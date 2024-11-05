@@ -459,6 +459,10 @@ def parse_protobuf_kv_entry(
     return Ok((key, value, raw.versionstamp))
 
 
+_PACK_KEY_CACHE_LIMIT = 128
+_PACK_KEY_CACHE: dict[tuple[tuple[type[KvKeyPiece], ...], KvKeyTuple], bytes] = {}
+
+
 def pack_key(key: AnyKvKey) -> bytes:
     r"""
     Encode a KV key tuple into its bytes form, enforcing type restrictions.
@@ -482,12 +486,24 @@ def pack_key(key: AnyKvKey) -> bytes:
     """  # noqa: E501
     if isinstance(key, KvKeyEncodable):
         return key.kv_key_bytes()
-    if not all(isinstance(piece, KV_KEY_PIECE_TYPES) for piece in key):
-        raise TypeError(
-            f"key contains types other than "
-            f"{', '.join(t.__name__ for t in KV_KEY_PIECE_TYPES)}: {key!r}"
-        )
-    return pack(key)
+
+    cache = _PACK_KEY_CACHE
+    cache_key = tuple([type(x) for x in key]), tuple(key)
+    packed_key = cache.get(cache_key)
+    if packed_key:
+        return packed_key
+
+    for piece in key:
+        if not isinstance(piece, KV_KEY_PIECE_TYPES):
+            raise TypeError(
+                f"key contains types other than "
+                f"{', '.join(t.__name__ for t in KV_KEY_PIECE_TYPES)}: {key!r}"
+            )
+    packed_key = pack(key)
+    if len(cache) >= _PACK_KEY_CACHE_LIMIT:
+        del cache[next(iter(cache.keys()))]
+    cache[cache_key] = packed_key
+    return packed_key
 
 
 class PackKeyRangeOptions(TypedDict, total=False):

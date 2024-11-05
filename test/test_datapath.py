@@ -26,6 +26,7 @@ from typing_extensions import TypeAlias
 from v8serialize import Decoder
 from yarl import URL
 
+from denokv import datapath
 from denokv._datapath_pb2 import KvEntry as ProtobufKvEntry
 from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import ReadRangeOutput
@@ -779,6 +780,13 @@ def test_pack_key() -> None:
         (float, 2.0),
         (bool, True),
     )
+
+
+def test_pack_key_cache() -> None:
+    for i in range(datapath._PACK_KEY_CACHE_LIMIT * 2):
+        assert unpack(pack_key(("foo", i))) == ("foo", i)
+
+    assert len(datapath._PACK_KEY_CACHE) == datapath._PACK_KEY_CACHE_LIMIT
 
 
 def test_pack_key__rejects_unsupported_types() -> None:

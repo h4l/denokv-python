@@ -66,6 +66,10 @@ from denokv.kv import AuthenticatorFn
 from denokv.kv import CachedValue
 from denokv.kv import DatabaseMetadataCache
 from denokv.kv import EndpointSelector
+from denokv.kv import Exclude
+from denokv.kv import Include
+from denokv.kv import KeyRangeSelection
+from denokv.kv import KeyRangeSelectionResult
 from denokv.kv import KeySelection
 from denokv.kv import KeySelectionResult
 from denokv.kv import Kv
@@ -79,6 +83,7 @@ from denokv.kv import VersionStamp
 from denokv.kv import normalize_key
 from denokv.kv import open_kv
 from denokv.kv_keys import KvKey
+from denokv.kv_keys import KvKeyRange
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
@@ -667,13 +672,14 @@ async def test_Kv_get__retries_retryable_snapshot_read_errors(
 
 
 @pytest_mark_asyncio
-async def test_Kv_getv2__infers_return_of_selection_presentation(
+async def test_Kv_getv2__infers_return_of_selection_presentation__key(
     kv: Kv, mock_snapshot_read: AsyncMock
 ) -> None:
     read_output = SnapshotReadOutput(
         ranges=[
             ReadRangeOutput(values=[pack_kv_entry(("a", 1), b"a1", versionstamp=11)]),
             ReadRangeOutput(values=[]),
+            ReadRangeOutput(values=[pack_kv_entry(("a", 3), b"a3", versionstamp=12)]),
         ],
         read_disabled=False,
         read_is_strongly_consistent=True,
@@ -682,18 +688,25 @@ async def test_Kv_getv2__infers_return_of_selection_presentation(
     mock_snapshot_read.side_effect = None
     mock_snapshot_read.return_value = Ok(read_output)
 
-    a1 = kv.getv2(KeySelection(("a", 1)))
+    a1 = kv.getv2(KeySelection(KvKey("a", 1)))
     a2 = kv.getv2(KeySelection(("a", 2)), group=a1.read_result.group)
+    a3 = kv.getv2(KvKey("a", 3), group=a1.read_result.group)
 
-    def use_key(key: tuple[str, int]) -> None:
-        assert key == ("a", 1)
+    _a1: KeySelectionResult[KvKey[str, int]] = a1
+    _a2: KeySelectionResult[tuple[str, int]] = a2
+    _a3: KeySelectionResult[KvKey[str, int]] = a3
+    _expected_type_error: KeySelectionResult[tuple[str, str]]
+    _expected_type_error = a1  # type: ignore[assignment]
+    _expected_type_error = a2  # type: ignore[assignment]
+    _expected_type_error = a3  # type: ignore[assignment]
 
-    use_key(a1.key)
-    assert a1.key == ("a", 1)
+    assert a1.key == KvKey("a", 1)
     assert a2.key == ("a", 2)
+    assert a3.key == KvKey("a", 3)
 
     a1_val = await a1
     a2_val = await a2
+    a3_val = await a3
 
     mock_snapshot_read.assert_called_once()
 
@@ -704,6 +717,78 @@ async def test_Kv_getv2__infers_return_of_selection_presentation(
     assert a2_val is None
     assert a2.value() is None
     assert a2.versionstamp() is None
+
+    assert a3_val == b"a3"
+    assert a3.value() == b"a3"
+    assert a3.versionstamp() == VersionStamp(12)
+
+
+@pytest_mark_asyncio
+async def test_Kv_getv2__infers_return_of_selection_presentation__key_range(
+    kv: Kv, mock_snapshot_read: AsyncMock
+) -> None:
+    read_output = SnapshotReadOutput(
+        ranges=[
+            ReadRangeOutput(
+                values=[
+                    pack_kv_entry(("a", 1), b"a1", versionstamp=11),
+                    pack_kv_entry(("a", 2), b"a2", versionstamp=11),
+                ]
+            ),
+            ReadRangeOutput(values=[]),
+            ReadRangeOutput(
+                values=[
+                    pack_kv_entry(("c", 1), b"c1", versionstamp=12),
+                    pack_kv_entry(("c", 2), b"c2", versionstamp=12),
+                ]
+            ),
+        ],
+        read_disabled=False,
+        read_is_strongly_consistent=True,
+        status=SnapshotReadStatus.SR_SUCCESS,
+    )
+    mock_snapshot_read.side_effect = None
+    mock_snapshot_read.return_value = Ok(read_output)
+
+    rra = kv.getv2(KvKey("a", 1).range_stop(Exclude(KvKey("a", 10))))
+    rb = KvKey("b", 1).range_stop(Exclude(KvKey("a", 10)))
+    rrb = kv.getv2(KeyRangeSelection(rb), group=rra.read_result.group)
+    rrc = kv.getv2(
+        KvKeyRange(Include("c", 2), Exclude("c", 10)), group=rra.read_result.group
+    )
+
+    _expected_type: KeyRangeSelectionResult[
+        KvKeyRange[Include[KvKey[str, int]], Exclude[KvKey[str, int]]]
+    ]
+    _expected_type = rra
+    _expected_type = rrb
+    _expected_type = rrc
+
+    _expected_type_error: KeyRangeSelectionResult[
+        KvKeyRange[Include[KvKey[str, str]], Exclude[KvKey[str, str]]]
+    ]
+    _expected_type_error = rra  # type: ignore[assignment]
+    _expected_type_error = rrb  # type: ignore[assignment]
+    _expected_type_error = rrc  # type: ignore[assignment]
+
+    assert rra.key_range == KvKey("a", 1).range_stop(Exclude(KvKey("a", 10)))
+    assert rrb.key_range == rb
+    assert rrc.key_range == KvKeyRange(Include("c", 2), Exclude("c", 10))
+
+    rra_val = await rra
+    rrb_val = await rrb
+    rrc_val = await rrc
+
+    mock_snapshot_read.assert_called_once()
+
+    assert rra_val == (b"a1", b"a2")
+    assert rra.values() == (b"a1", b"a2")
+
+    assert rrb_val == ()
+    assert rrb.values() == ()
+
+    assert rrc_val == (b"c1", b"c2")
+    assert rrc.values() == (b"c1", b"c2")
 
 
 @pytest.mark.parametrize("read_via_group", [True, False])

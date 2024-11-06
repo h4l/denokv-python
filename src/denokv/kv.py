@@ -1006,6 +1006,9 @@ WriteOperation: TypeAlias = Union[Check, Set, Sum, Min, Max, Delete, Enqueue]
 class KeySelector(Protocol):
     """The interface for an object that requires keys to be read from a KV database."""
 
+    __slots__ = ()
+
+    # TODO: rename this to differentiate from the top-level KeySelection
     @dataclass(frozen=True, **slots_if310())
     class KeySelection:
         """
@@ -1673,6 +1676,8 @@ class InferReadResultPresentationCreatorReturn(Protocol[_KvReadPresentationT_co]
 
 @runtime_checkable
 class AnyAsyncKvSelection(KeySelector, Protocol[_T_co]):
+    __slots__ = ()
+
     async def handle_selection_read_result_async(
         self,
         result: KeySelectorGroupResult,
@@ -1694,6 +1699,8 @@ class AnyAsyncKvSelection(KeySelector, Protocol[_T_co]):
 
 @runtime_checkable
 class AnySyncKvSelection(KeySelector, Protocol[_T_co]):
+    __slots__ = ()
+
     def handle_selection_read_result(
         self,
         result: KeySelectorGroupResult,
@@ -1715,6 +1722,8 @@ def is_kv_selection(obj: object) -> TypeIs[AnyKvSelection[object]]:
 
 @runtime_checkable
 class AnyKvReadPresentation(Awaitable[_PV_co], Protocol[_T_co, _PV_co]):
+    __slots__ = ()
+
     @property
     def read_result(self) -> AnyKvReadResult[_T_co]: ...
 
@@ -1809,6 +1818,9 @@ class KeySelectionResult(
     def exists(self) -> bool:
         return self.read_result.result() is not None
 
+    def entry(self) -> KvEntry[AnyKvKeyT, object] | None:
+        return self.read_result.result()
+
     # I think it'd be best to use methods to get value and versionstamp. They
     # should raise with errors from KV if reading failed.
     def value(self) -> object:
@@ -1822,6 +1834,94 @@ class KeySelectionResult(
     def __await__(self) -> Generator[Any, Any, object | None]:
         result = yield from self.read_result.read().__await__()
         return None if result is None else result.value
+
+
+@dataclass(frozen=True, **slots_if310())
+class KeyRangeSelection(
+    ReadResultPresentationCreator[
+        tuple[KvEntry[KvKey, object], ...], tuple[object, ...]
+    ],
+    AnySyncKvSelection[tuple[KvEntry[KvKey, object], ...]],
+    Generic[KvKeyRangeT],
+):
+    key_range: KvKeyRangeT
+    limit: int = field(default=100)
+    required_consistency: ConsistencyLevel | None = field(default=None, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.limit < 1:
+            raise ValueError(f"limit must be > 0: limit={self.limit!r}")
+
+    @override
+    def get_key_selection(self) -> Sequence[ReadRange] | KeySelector.KeySelection:
+        start, end = self.key_range.kv_key_range_bytes()
+        ranges = [dp_protobuf.ReadRange(start=start, end=end, limit=self.limit)]
+        if self.required_consistency is None:
+            return ranges
+        return KeySelector.KeySelection(
+            ranges=ranges, required_consistency=Some(self.required_consistency)
+        )
+
+    @override
+    def create_result_presentation(
+        self, read_result: AnyKvReadResult[tuple[KvEntry[KvKey, object], ...]]
+    ) -> KeyRangeSelectionResult[KvKeyRangeT]:
+        return KeyRangeSelectionResult(selector=self, read_result=read_result)
+
+    @override
+    def handle_selection_read_result(
+        self, result: KeySelectorGroupResult, *, kv: Kv
+    ) -> tuple[KvEntry[KvKey, object], ...]:
+        if is_err(result):
+            raise result.error
+        read_results = result.value
+
+        assert len(read_results.selection_result) == 1
+        (range_values,) = read_results.selection_result
+
+        entries: list[KvEntry[KvKey, object]] = []
+        for raw_kv_entry in range_values:
+            parse_result = parse_protobuf_kv_entry(
+                raw_kv_entry, v8_decoder=kv.v8_decoder, le64_type=KvU64
+            )
+            if isinstance(parse_result, Err):
+                raise ProtocolViolation(
+                    f"Server responded to Data Path request with invalid "
+                    f"value: {parse_result.error}",
+                    data=raw_kv_entry,
+                    endpoint=read_results.endpoint,
+                ) from parse_result.error
+
+            parsed_key, parsed_value, parsed_versionstamp = parse_result.value
+            kv_entry = KvEntry(
+                KvKey(*parsed_key), parsed_value, VersionStamp(parsed_versionstamp)
+            )
+            entries.append(kv_entry)
+        return tuple(entries)
+
+
+@dataclass(frozen=True, eq=False, **slots_if310())
+class KeyRangeSelectionResult(
+    AnyKvReadPresentation[tuple[KvEntry[KvKey, object], ...], tuple[object, ...]],
+    Awaitable[Sequence[object]],
+    Generic[KvKeyRangeT],
+):
+    selector: KeyRangeSelection[KvKeyRangeT]
+    read_result: AnyKvReadResult[tuple[KvEntry[KvKey, object], ...]]
+
+    @property
+    def key_range(self) -> KvKeyRangeT:
+        return self.selector.key_range
+
+    def entries(self) -> tuple[KvEntry[KvKey, object], ...]:
+        return self.read_result.result()
+
+    def values(self) -> tuple[object, ...]:
+        return tuple([entry.value for entry in self.read_result.result()])
+
+    def __await__(self) -> Generator[Any, Any, tuple[object, ...]]:
+        result = yield from self.read_result.read().__await__()
+        return tuple([entry.value for entry in result])
 
 
 @dataclass(frozen=True, **slots_if310())
@@ -2091,6 +2191,10 @@ class Kv:
             return normalize_key(key, bigints=False)  # type: ignore[return-value]
         return key
 
+    # Note on ignored overload-overlap: they do overlap, but the first listed
+    # match gets used, so it doesn't matter in practice. Removing the overlap
+    # would mean complicating the *args definitions to only match > 1 arg, which
+    # has no benefit.
     @overload
     def getv2(
         self,
@@ -2102,10 +2206,28 @@ class Kv:
     ) -> _KvReadPresentationT_co: ...
 
     @overload
-    def getv2(
+    def getv2(  # type: ignore[overload-overlap]
         self,
-        read: AnyKvKey
-        | AnyKvSelection[object]
+        read: AnyKvKeyT,
+        /,
+        *,
+        reads: None = None,
+        group: KvReadGroup | None = None,
+    ) -> KeySelectionResult[AnyKvKeyT]: ...
+    @overload
+    def getv2(  # type: ignore[overload-overlap]
+        self,
+        read: KvKeyRangeT,
+        /,
+        *,
+        reads: None = None,
+        group: KvReadGroup | None = None,
+    ) -> KeyRangeSelectionResult[KvKeyRangeT]: ...
+
+    @overload
+    def getv2(  # type: ignore[overload-overlap]
+        self,
+        read: AnyKvSelection[object]
         | AnyKvReadResult[object]
         | AnyKvReadPresentation[object, object],
         /,
@@ -2118,6 +2240,7 @@ class Kv:
     def getv2(
         self,
         *args: AnyKvKey
+        | KvKeyRangeEncodable
         | AnyKvSelection[object]
         | AnyKvReadResult[object]
         | AnyKvReadPresentation[object, object],
@@ -2135,6 +2258,7 @@ class Kv:
     def getv2(
         self,
         *args: AnyKvKey
+        | KvKeyRangeEncodable
         | AnyKvSelection[object]
         | AnyKvReadResult[object]
         | AnyKvReadPresentation[object, object]
@@ -2168,6 +2292,10 @@ class Kv:
                 normalised_reads.append((r.selection, r, None))
             elif isinstance(r, AnyKvReadPresentation):
                 normalised_reads.append((r.read_result.selection, r.read_result, r))
+            elif isinstance(r, KvKeyRangeEncodable):
+                normalised_reads.append(
+                    (KeyRangeSelection(r, required_consistency=consistency), None, None)
+                )
             else:
                 assert not isinstance(r, InferReadResultPresentationCreatorReturn)
                 normalised_reads.append(

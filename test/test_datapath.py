@@ -47,6 +47,8 @@ from denokv.datapath import ProtocolViolation
 from denokv.datapath import RequestUnsuccessful
 from denokv.datapath import ResponseUnsuccessful
 from denokv.datapath import increment_packed_key
+from denokv.datapath import is_any_kv_key
+from denokv.datapath import is_kv_key_tuple
 from denokv.datapath import pack_key
 from denokv.datapath import pack_key_range
 from denokv.datapath import parse_protobuf_kv_entry
@@ -55,6 +57,7 @@ from denokv.datapath import snapshot_read
 from denokv.kv import KvEntry
 from denokv.kv import KvU64
 from denokv.kv import VersionStamp
+from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok
 from test.denokv_testing import MockKvDb
@@ -1009,3 +1012,18 @@ def test_read_range_single(
         assert kve.key == pack_key(key)
         assert kve.value == expected
         assert kve.versionstamp == ver
+
+
+def test_is_kv_key_tuple() -> None:
+    assert is_kv_key_tuple(("a", 1, 1.0, True, b"b"))
+    assert is_kv_key_tuple(cast(object, ("a", 1, 1.0, True, b"b")))
+    assert not is_kv_key_tuple(((),))
+    assert is_kv_key_tuple(KvKey("x"))
+
+
+def test_is_any_kv_key() -> None:
+    assert is_any_kv_key(KvKey("x"))
+    assert is_any_kv_key(cast(object, KvKey("x")))
+    assert is_any_kv_key(("a", 1, 1.0, True, b"b"))
+    assert not is_any_kv_key([])
+    assert not is_any_kv_key(((),))

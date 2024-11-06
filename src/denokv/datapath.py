@@ -377,9 +377,16 @@ async def snapshot_read(
     return Ok(read_output)
 
 
-def is_kv_key_tuple(tup: tuple[object, ...]) -> TypeGuard[KvKeyTuple]:
+def is_kv_key_tuple(tup: object) -> TypeGuard[KvKeyTuple]:
     """Check if a tuple only contains valid KV key tuple type values."""
-    return all(isinstance(part, KV_KEY_PIECE_TYPES) for part in tup)
+    return isinstance(tup, tuple) and all(
+        isinstance(part, KV_KEY_PIECE_TYPES) for part in tup
+    )
+
+
+def is_any_kv_key(obj: object) -> TypeGuard[AnyKvKey]:
+    """Check if an object is an AnyKvKey type."""
+    return isinstance(obj, KvKeyEncodable) or is_kv_key_tuple(obj)
 
 
 def parse_protobuf_kv_entry(

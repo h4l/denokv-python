@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Iterable
@@ -26,6 +27,17 @@ from denokv.result import Results
 from denokv.result import Some
 from denokv.result import is_err
 from denokv.result import is_ok
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="<3.10 does not use slots for dataclass"
+)
+def test_Option__instances_use_slots_to_avoid_dict() -> None:
+    with pytest.raises(AttributeError):
+        print(Some(1).__dict__)
+
+    with pytest.raises(AttributeError):
+        print(Nothing().__dict__)
 
 
 def test_Option__satisfies_OptionMethods() -> None:
@@ -187,6 +199,17 @@ def test_Option() -> None:
     def type_check_zip_with(a: Option[str], b: Option[object]) -> Option[int]:
         # must be type error
         return a.zip_with(b, int)  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="<3.10 does not use slots for dataclass"
+)
+def test_Result__instances_use_slots_to_avoid_dict() -> None:
+    with pytest.raises(AttributeError):
+        print(Ok(1).__dict__)
+
+    with pytest.raises(AttributeError):
+        print(Err("x").__dict__)
 
 
 def test_Result__satisfies_ResultMethods() -> None:

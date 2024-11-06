@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import weakref
 from typing import Literal
 from typing import Sequence
 from typing import cast
@@ -103,6 +104,14 @@ def test_tuple_methods() -> None:
     assert 2 * key == KvKey("a", "b", "c", "a", "b", "c")
     assert (key * 3).count("b") == 3
     assert key.index("b") == 1
+
+
+def test_weakref() -> None:
+    key = KvKey("foo")
+    r = weakref.ref(key)
+    assert r() is key
+    del key
+    assert r() is None
 
 
 def test_types() -> None:

@@ -239,7 +239,7 @@ else:
         [Kv]: `denokv.kv.Kv`
         """
 
-        __slots__ = ()
+        __slots__ = ("__weakref__",)
 
         def __len__(self) -> int:
             return len(self._unpacked)

@@ -122,11 +122,6 @@ class OptionMethods(Iterable[T_co], Protocol[T_co]):
         Some(1)
         """
 
-    @overload
-    def flatten(self: OptionMethods[OptionMethods[U]]) -> OptionMethods[U]: ...
-    @overload
-    def flatten(self) -> Self: ...
-
     def flatten(self) -> Self:
         """
         Flatten a Some containing an Option into a single level.
@@ -788,16 +783,9 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         >>> assert Err('x').error_or_else(lambda: 2) == 'x'
         """
 
-    @overload
-    def flatten(
-        self: ResultMethods[ResultMethods[U, E], E_co],
-    ) -> ResultMethods[U, E | E_co]: ...
-    @overload
-    def flatten(self) -> Self: ...
-
-    def flatten(  # type: ignore[misc]
-        self: ResultMethods[ResultMethods[U, E] | T_co, E_co],
-    ) -> Result[T_co, E_co] | Ok[U] | Err[E]:
+    # We have to type this quite broadly here, but can be more specific at the
+    # Ok/Err implementations.
+    def flatten(self) -> ResultMethods[object, object]:
         """
         Flatten an Ok containing a Result into a single Result.
 

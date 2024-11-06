@@ -615,9 +615,6 @@ def parse_protobuf_kv_entry(
     """
     Validate & decode the raw bytes of a protobuf KvEntry.
 
-    If `preserve_key` is provided, it's passed to `create_kv_entry` instead of the key
-    decoded from the `raw` `KvEntry`.
-
     Returns
     -------
     :

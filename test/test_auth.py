@@ -33,7 +33,7 @@ from test.denokv_testing import assume_ok
 
 TestClient: TypeAlias = _TestClient[web.Request, web.Application]
 
-pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
+pytest_mark_asyncio = pytest.mark.asyncio()
 
 
 @pytest.fixture

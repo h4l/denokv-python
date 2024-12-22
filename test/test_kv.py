@@ -83,7 +83,7 @@ if TYPE_CHECKING:
 
     from typing_extensions import TypeAlias
 
-pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
+pytest_mark_asyncio = pytest.mark.asyncio()
 
 
 @given(v=st.integers(min_value=0, max_value=2**80 - 1))

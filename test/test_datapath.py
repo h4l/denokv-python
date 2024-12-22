@@ -64,7 +64,7 @@ from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 
 TestClient: TypeAlias = _TestClient[web.Request, web.Application]
 
-pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
+pytest_mark_asyncio = pytest.mark.asyncio()
 
 
 @pytest.fixture

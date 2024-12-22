@@ -577,7 +577,7 @@ class Kv:
 
     def _prepare_key(self, key: AnyKvKeyT) -> AnyKvKeyT:
         if self.flags & KvFlags.IntAsNumber and not isinstance(key, KvKeyEncodable):
-            return normalize_key(key, bigints=False)  # type: ignore[return-value,arg-type]
+            return normalize_key(key, bigints=False)  # type: ignore[return-value]
         return key
 
     # get(x), get(x, y), get(keys=[a, b, c])

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Callable
+from typing import Final
 from typing import Generic
 from typing import Iterable
 from typing import Iterator
@@ -479,7 +480,7 @@ class Some(Generic[T_co]):
         object.__setattr__(obj, "value", value)
         return obj
 
-    value: T_co
+    value: Final[T_co]  # type: ignore[misc] # misc needed to ignore error: Final name must be initialized with a value. Final itself is needed because mypy under Python3.13 fail to detect Final via dataclass being frozen.
     """
     The value in this Some. Raises TypeError if accessed from Nothing.
 
@@ -1025,7 +1026,7 @@ class Ok(Generic[T_co]):
 
         def _AnySuccess_marker(self, no_call: Never) -> Never: ...
 
-    value: T_co
+    value: Final[T_co]  # type: ignore[misc] # misc needed to ignore error: Final name must be initialized with a value. Final itself is needed because mypy under Python3.13 fail to detect Final via dataclass being frozen.
     """
     Access the Ok's value. Raises TypeError if this is Err.
 
@@ -1134,7 +1135,7 @@ class Err(Generic[E_co]):
 
         def _AnyFailure_marker(self, no_call: Never) -> Never: ...
 
-    error: E_co
+    error: Final[E_co]  # type: ignore[misc] # misc needed to ignore error: Final name must be initialized with a value. Final itself is needed because mypy under Python3.13 fail to detect Final via dataclass being frozen.
     """
     Access the Err's error. Raises TypeError if this is Ok.
 

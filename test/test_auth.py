@@ -13,7 +13,8 @@ import aiohttp
 import pytest
 import pytest_asyncio
 from aiohttp import web
-from aiohttp.test_utils import TestClient
+from aiohttp.test_utils import TestClient as _TestClient
+from typing_extensions import TypeAlias
 from yarl import URL
 
 from denokv._rfc3339 import parse_rfc3339_datetime
@@ -29,6 +30,8 @@ from denokv.auth import get_database_metadata
 from denokv.auth import read_metadata_exchange_response
 from test.denokv_testing import assume_err
 from test.denokv_testing import assume_ok
+
+TestClient: TypeAlias = _TestClient[web.Request, web.Application]
 
 pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
 

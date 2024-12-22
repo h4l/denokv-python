@@ -17,11 +17,12 @@ import pytest
 import pytest_asyncio
 import v8serialize
 from aiohttp import web
-from aiohttp.test_utils import TestClient
+from aiohttp.test_utils import TestClient as _TestClient
 from fdb.tuple import pack
 from fdb.tuple import unpack
 from hypothesis import given
 from hypothesis import strategies as st
+from typing_extensions import TypeAlias
 from v8serialize import Decoder
 from yarl import URL
 
@@ -60,6 +61,8 @@ from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
 from test.denokv_testing import nextafter
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
+
+TestClient: TypeAlias = _TestClient[web.Request, web.Application]
 
 pytest_mark_asyncio = pytest.mark.asyncio(loop_scope="module")
 

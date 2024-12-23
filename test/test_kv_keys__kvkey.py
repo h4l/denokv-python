@@ -12,10 +12,8 @@ from denokv.datapath import AnyKvKey
 from denokv.datapath import KvKeyEncodable
 from denokv.datapath import KvKeyPiece
 from denokv.datapath import KvKeyTuple
-
-# from denokv.kv import DefaultKvKey
-from denokv.kv import DefaultKvKey
-from denokv.kv import KvKey
+from denokv.kv_keys import DefaultKvKey
+from denokv.kv_keys import KvKey
 
 
 def test_kvkey__generic_tuple_params() -> None:

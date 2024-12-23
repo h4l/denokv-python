@@ -36,10 +36,10 @@ from denokv.datapath import parse_protobuf_kv_entry
 from denokv.errors import InvalidCursor
 from denokv.kv import AnyCursorFormat
 from denokv.kv import KvEntry
-from denokv.kv import KvKey
 from denokv.kv import KvU64
 from denokv.kv import ListContext
 from denokv.kv import VersionStamp
+from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result

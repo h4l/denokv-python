@@ -1,5 +1,9 @@
 PROTOC_VERSION = "22.0"
 
+variable "REPORT_CODE_COVERAGE" {
+    default = false
+}
+
 group "default" {
     targets = ["test", "test_package", "lint-all"]
 }
@@ -30,10 +34,11 @@ target "test" {
     }
     args = {
         PYTHON_VER = get_py_image_tag(py)
+        REPORT_CODE_COVERAGE = REPORT_CODE_COVERAGE
     }
-    target = "test"
+    target = "test-report"
     no-cache-filter = ["test"]
-    output = ["type=cacheonly"]
+    output = ["type=local,dest=build/test-reports/test_py${replace(py, ".", "")}"]
 }
 
 target "test_package" {

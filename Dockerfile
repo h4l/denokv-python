@@ -28,7 +28,7 @@ RUN --mount=source=.,target=/workspace,rw \
 mkdir /out
 pytest_options=(--junit-xml=pytest.xml)
 if [[ ${REPORT_CODE_COVERAGE:-} == true ]]; then
-  pytest_options+=(--cov --cov-report=html:/out/htmlcov);
+  pytest_options+=(--cov=denokv --cov-report=html:/out/htmlcov);
 fi
 
 pytest "${pytest_options[@]}"

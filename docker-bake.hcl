@@ -3,6 +3,9 @@ PROTOC_VERSION = "22.0"
 variable "REPORT_CODE_COVERAGE" {
     default = false
 }
+variable "REPORT_CODE_BRANCH_COVERAGE" {
+    default = false
+}
 
 group "default" {
     targets = ["test", "test_package", "lint-all"]
@@ -35,6 +38,7 @@ target "test" {
     args = {
         PYTHON_VER = get_py_image_tag(py)
         REPORT_CODE_COVERAGE = REPORT_CODE_COVERAGE
+        REPORT_CODE_BRANCH_COVERAGE = REPORT_CODE_BRANCH_COVERAGE
     }
     target = "test-report"
     no-cache-filter = ["test"]

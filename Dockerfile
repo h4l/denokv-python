@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/root/.cache poetry install
 
 
 FROM poetry AS test
-ARG REPORT_CODE_COVERAGE=false
+ARG REPORT_CODE_COVERAGE=false REPORT_CODE_BRANCH_COVERAGE=false
 RUN --mount=source=.,target=/workspace,rw \
     --mount=type=cache,uid=1000,target=.pytest_cache \
     --mount=type=cache,uid=1000,target=.hypothesis \
@@ -29,6 +29,10 @@ mkdir /out
 pytest_options=(--junit-xml=pytest.xml)
 if [[ ${REPORT_CODE_COVERAGE:-} == true ]]; then
   pytest_options+=(--cov=denokv --cov-report=html:/out/htmlcov);
+
+  if [[ ${REPORT_CODE_BRANCH_COVERAGE:-} == true ]]; then
+    pytest_options+=(--cov-branch);
+  fi
 fi
 
 pytest "${pytest_options[@]}"

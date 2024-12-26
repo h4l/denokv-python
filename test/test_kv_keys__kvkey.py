@@ -76,6 +76,10 @@ def test_kv_key_bytes() -> None:
     assert KvKey("foo", 1).kv_key_bytes() == pack_key(("foo", 1))
 
 
+def test_instances_implement_SupportsBytes() -> None:
+    assert bytes(KvKey("foo", 1)) == pack_key(("foo", 1))
+
+
 @pytest.mark.parametrize("l", [-1, 0, 1, -1.0, 0.0, 1.0, "a", "b"])
 @pytest.mark.parametrize("r", [-1, 0, 1, -1.0, 0.0, 1.0, "a", "b"])
 def test_order_comparisons(l: KvKeyPiece, r: KvKeyPiece) -> None:  # noqa: E741

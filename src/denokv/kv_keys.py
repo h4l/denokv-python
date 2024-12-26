@@ -117,6 +117,9 @@ class _KvKeyState:
             self._packed = packed = pack(self._unpacked)
         return packed
 
+    def __bytes__(self) -> bytes:
+        return self.kv_key_bytes()
+
     @classmethod
     def from_kv_key_bytes(cls, packed_key: bytes) -> DefaultKvKey:
         """Create a KvKey by unpacking a packed key."""

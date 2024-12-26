@@ -20,6 +20,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient as _TestClient
 from fdb.tuple import pack
 from fdb.tuple import unpack
+from hypothesis import example
 from hypothesis import given
 from hypothesis import strategies as st
 from typing_extensions import TypeAlias
@@ -789,6 +790,25 @@ def test_pack_key_cache() -> None:
     assert len(datapath._PACK_KEY_CACHE) == datapath._PACK_KEY_CACHE_LIMIT
 
 
+all_floats = st.floats(allow_nan=True, allow_infinity=True, allow_subnormal=True)
+
+
+@given(f1=all_floats, f2=all_floats)
+@example(f1=-0.0, f2=0.0)
+def test_pack_key_cache__distinguishes_float_values(f1: float, f2: float) -> None:
+    print(f"equal={pack((f1,)) == pack((f2,))}", f1, f2)
+    for _i in range(2):
+        fdb_packed1 = pack((f1,))
+        cached_packed1 = pack_key((f1,))
+        fdb_packed2 = pack((f2,))
+        cached_packed2 = pack_key((f2,))
+
+        if fdb_packed1 == fdb_packed2:
+            assert cached_packed1 == cached_packed2
+        else:
+            assert cached_packed1 != cached_packed2
+
+
 def test_pack_key__rejects_unsupported_types() -> None:
     # Only supported types are allowed, not all types allowed by FoundationDB
     # key tuples.
@@ -813,6 +833,7 @@ def test_increment_packed_key__behaviour() -> None:
 
 
 @given(pieces=ordered_kv_key_pieces_of_same_type)
+@example((-0.0, 0.0))
 def test_increment_packed_key(
     pieces: tuple[float, float]
     | tuple[str, str]

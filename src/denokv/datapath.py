@@ -15,7 +15,9 @@ from typing import Callable
 from typing import Container
 from typing import Final
 from typing import Protocol
+from typing import Type
 from typing import TypedDict
+from typing import Union
 from typing import overload
 from typing import runtime_checkable
 
@@ -49,7 +51,7 @@ if TYPE_CHECKING:
     from typing_extensions import TypeVar
     from typing_extensions import Unpack
 
-    KvKeyPiece: TypeAlias = "str | bytes | int | float | bool"
+    KvKeyPiece: TypeAlias = Union[str, bytes, int, float, bool]
     KvKeyPieceT = TypeVar("KvKeyPieceT", bound=KvKeyPiece, default=KvKeyPiece)
 
     KvKeyTuple: TypeAlias = tuple[KvKeyPieceT, ...]
@@ -459,8 +461,10 @@ def parse_protobuf_kv_entry(
     return Ok((key, value, raw.versionstamp))
 
 
+_PackedKeyCacheKey: TypeAlias = tuple[Type[KvKeyPiece], Union[str, bytes, int, bool]]
+_ieee_binary64: Callable[[float], bytes] = struct.Struct("d").pack
 _PACK_KEY_CACHE_LIMIT = 128
-_PACK_KEY_CACHE: dict[tuple[tuple[type[KvKeyPiece], ...], KvKeyTuple], bytes] = {}
+_PACK_KEY_CACHE: dict[tuple[_PackedKeyCacheKey, ...], bytes] = {}
 
 
 def pack_key(key: AnyKvKey) -> bytes:
@@ -488,7 +492,17 @@ def pack_key(key: AnyKvKey) -> bytes:
         return key.kv_key_bytes()
 
     cache = _PACK_KEY_CACHE
-    cache_key = tuple([type(x) for x in key]), tuple(key)
+
+    cache_key: tuple[_PackedKeyCacheKey, ...] = tuple(
+        [
+            # -0.0 and 0.0 needs to be cached separately, but Python treats them
+            # as equal. So we use the binary float representation as the cache
+            # key. (This is slightly faster than using copysign, and potentially
+            # handles other non-canonical float equality differences.)
+            (float, _ieee_binary64(x)) if isinstance(x, float) else (type(x), x)
+            for x in key
+        ]
+    )
     packed_key = cache.get(cache_key)
     if packed_key:
         return packed_key

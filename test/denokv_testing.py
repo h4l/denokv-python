@@ -14,6 +14,7 @@ from datetime import timedelta
 from itertools import groupby
 from typing import Literal
 from typing import overload
+from unittest.mock import Mock
 from uuid import UUID
 
 import v8serialize
@@ -82,6 +83,12 @@ T = TypeVar("T")
 E = TypeVar("E")
 E2 = TypeVar("E2")
 MessageT = TypeVar("MessageT", bound=Message)
+
+
+def mocked(mocked_value: object) -> Mock:
+    """Type-safely cast `mocked_value` to a Mock."""
+    assert isinstance(mocked_value, Mock)
+    return mocked_value
 
 
 def diff_protobuf_messages(

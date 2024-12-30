@@ -2919,13 +2919,13 @@ zstd = ["zstandard (>=0.18.0)"]
 
 [[package]]
 name = "v8serialize"
-version = "0.1.0"
+version = "0.2.0a0"
 description = "Read & write JavaScript values from Python with the V8 serialization format."
 optional = false
 python-versions = "<4.0,>=3.9"
 files = [
-    {file = "v8serialize-0.1.0-py3-none-any.whl", hash = "sha256:5136e50c24308f9ddc7b8083ca34e7c65f57cd321dd703b9667708a8552eebed"},
-    {file = "v8serialize-0.1.0.tar.gz", hash = "sha256:bd330fb925be9c395d82ed4f048b78f0d560d4358b3061d149665d8a8cc60d86"},
+    {file = "v8serialize-0.2.0a0-py3-none-any.whl", hash = "sha256:643557ed38757a5ddaac008469bc87c47e1e89df062941ce133323e60122f4f0"},
+    {file = "v8serialize-0.2.0a0.tar.gz", hash = "sha256:57dc3262a089ba5917da4d53300fa392e50e19ab2476ef3e507d6061f70ee332"},
 ]
 
 [package.dependencies]
@@ -3098,4 +3098,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9"
-content-hash = "4581fc6eb84b066a30991807676d038a115ea4e6a24093059d9dc46f2cab1bed"
+content-hash = "eceacf465958af528559937236cb0ab10ae6d4a8d492c1e075650c451a85b5db"

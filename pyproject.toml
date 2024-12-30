@@ -25,7 +25,7 @@ protobuf = ">=4.22.0,<6"
 # change was in 6.2.4 (which is late 2019)
 # https://github.com/apple/foundationdb/commits/main/bindings/python/fdb/tuple.py
 foundationdb = ">=6.2.4,<8"
-v8serialize = "^0.1.0"
+v8serialize = "^0.2.0-alpha.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.2"

@@ -844,3 +844,7 @@ else:
         for _ in range(steps):
             x = math.nextafter(x, y)
         return x
+
+
+def typeval(value: T) -> tuple[type[T], T]:
+    return type(value), value

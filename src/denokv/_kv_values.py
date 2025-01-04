@@ -115,7 +115,7 @@ class KvU64:
     ValueError: value not in range for 64-bit unsigned int
     """
 
-    RANGE: ClassVar = range(0, 2**64)
+    RANGE: ClassVar[range] = range(0, 2**64)
     value: int
 
     def __init__(self, value: bytes | int) -> None:

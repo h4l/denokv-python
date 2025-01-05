@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 from google.protobuf.message import Message
+from hypothesis import Verbosity
+from hypothesis import settings
 from pytest import Config
 from v8serialize import Encoder
 
 from denokv._pycompat.typing import Sequence
 from test import advance_time
 from test.denokv_testing import diff_protobuf_messages
+
+settings.register_profile("ci", max_examples=1000)
+settings.register_profile("dev", max_examples=10)
+settings.register_profile("debug", max_examples=10, verbosity=Verbosity.verbose)
+settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default").lower())
 
 advance_time_time = advance_time.advance_time_time
 

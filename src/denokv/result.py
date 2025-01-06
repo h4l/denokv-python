@@ -902,6 +902,23 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         >>> assert Err('error a').or_else(lambda: Err('error b')) == Err('error b')
         """
 
+    def or_raise(self) -> Ok[T_co]:
+        """
+        Return the Ok as-is, or raise the Err.error value if this is Err.
+
+        Examples
+        --------
+        >>> assert Ok(1).or_raise() == Ok(1)
+
+        >>> Err(ValueError('bad')).or_raise()
+        Traceback (most recent call last):
+        ValueError: bad
+
+        >>> Err('foo').or_raise()
+        Traceback (most recent call last):
+        Exception: foo
+        """
+
     def value_or(self, default: U) -> T_co | U:
         """
         Return the Ok's value, or default if this is Err.
@@ -920,6 +937,23 @@ class ResultMethods(Iterable[T_co], Protocol[T_co, E_co]):
         --------
         >>> assert Ok(1).value_or_else(lambda: 2) == 1
         >>> assert Err('x').value_or_else(lambda: 2) == 2
+        """
+
+    def value_or_raise(self) -> T_co:
+        """
+        Return the Ok's value, or raise the Err.error value if this is Err.
+
+        Examples
+        --------
+        >>> assert Ok(1).value_or_raise() == 1
+
+        >>> Err(ValueError('bad')).value_or_raise()
+        Traceback (most recent call last):
+        ValueError: bad
+
+        >>> Err('foo').value_or_raise()
+        Traceback (most recent call last):
+        Exception: foo
         """
 
     def __iter__(self) -> Iterator[T_co]:
@@ -1112,11 +1146,19 @@ class Ok(Generic[T_co]):
         return self
 
     @doc_from(ResultMethods)
+    def or_raise(self) -> Ok[T_co]:
+        return self
+
+    @doc_from(ResultMethods)
     def value_or(self, default: U) -> T_co:
         return self.value
 
     @doc_from(ResultMethods)
     def value_or_else(self, fn: Callable[[], U]) -> T_co:
+        return self.value
+
+    @doc_from(ResultMethods)
+    def value_or_raise(self) -> T_co:
         return self.value
 
     def __iter__(self) -> Iterator[T_co]:
@@ -1202,6 +1244,12 @@ class Err(Generic[E_co]):
     def or_else(self, fn: Callable[[], Result[T_co, U]]) -> Result[T_co, U]:
         return fn()
 
+    @doc_from(ResultMethods)
+    def or_raise(self) -> Never:
+        if isinstance(self.error, BaseException):
+            raise self.error
+        raise Exception(self.error)
+
     if not TYPE_CHECKING:
 
         @property
@@ -1215,6 +1263,12 @@ class Err(Generic[E_co]):
     @doc_from(ResultMethods)
     def value_or_else(self, fn: Callable[[], U]) -> U:
         return fn()
+
+    @doc_from(ResultMethods)
+    def value_or_raise(self) -> Never:
+        if isinstance(self.error, BaseException):
+            raise self.error
+        raise Exception(self.error)
 
     def __iter__(self) -> Iterator[Never]:
         return iter(())

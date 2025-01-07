@@ -108,27 +108,6 @@ def v8_encode_int_as_bigint(
         next(value)
 
 
-# TODO: add an explicit tagged JSBigInt type to v8serialize
-def create_default_v8_encoder() -> v8serialize.Encoder:
-    """
-    Create a new V8-serialization format Encoder.
-
-    This encoder always encodes int as JavaScript BigInt. We use this by default
-    for Kv instances to ensure consistent handling of int and float types.
-
-    Notes
-    -----
-    In contrast, the `v8serialize` default encoder encodes int as Number when it
-    fits in the +/- 2**53 - 1 range which float64 can represent exactly. This
-    results in differing number representation for different number sizes, which
-    is likely to be a footgun in the context of the Sum/Min/Max write
-    operations.
-    """
-    return v8serialize.Encoder(
-        encode_steps=[v8_encode_int_as_bigint, *v8serialize.default_encode_steps]
-    )
-
-
 class KvListOptions(TypedDict, total=False):
     """Keyword arguments of `Kv.list()`."""
 
@@ -418,7 +397,7 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
         self.session = session
         self.metadata_cache = DatabaseMetadataCache(authenticator=auth)
         self.retry_delays = ExponentialBackoff() if retry is None else retry
-        self.v8_encoder = v8_encoder or create_default_v8_encoder()
+        self.v8_encoder = v8_encoder or Encoder()
         self.v8_decoder = v8_decoder or Decoder()
         self.flags = KvFlags.IntAsNumber if flags is None else flags
 

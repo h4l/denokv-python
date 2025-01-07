@@ -18,6 +18,7 @@ from hypothesis import example
 from hypothesis import given
 from hypothesis import strategies as st
 from v8serialize import Decoder
+from v8serialize.jstypes import JSBigInt
 from yarl import URL
 
 from denokv import datapath
@@ -75,12 +76,12 @@ from denokv.result import Result
 from denokv.result import is_ok
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
+from test.denokv_testing import default_v8_encoder
 from test.denokv_testing import make_database_metadata
 from test.denokv_testing import meta_endpoint
 from test.denokv_testing import mock_db_api
 from test.denokv_testing import nextafter
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
-from test.denokv_testing import v8_bigint_encoder
 
 TestClient: TypeAlias = _TestClient[web.Request, web.Application]
 
@@ -841,7 +842,7 @@ async def test_atomic_write__handles_unsuccessful_responses(
 
 @pytest.fixture
 def example_entries_write() -> Mapping[KvKeyTuple, object]:
-    return {("bigint", 1): 10}
+    return {("bigint", 1): JSBigInt(10)}
 
 
 # There's not really much point in testing many successful mutations here, as
@@ -858,7 +859,7 @@ def example_entries_write() -> Mapping[KvKeyTuple, object]:
                     Mutation(
                         key=pack_key(("bigint", 1)),
                         value=KvValue(
-                            data=bytes(v8_bigint_encoder.encode(20)),
+                            data=bytes(default_v8_encoder.encode(JSBigInt(20))),
                             encoding=ValueEncoding.VE_V8,
                         ),
                         mutation_type=MutationType.M_SET,
@@ -870,7 +871,7 @@ def example_entries_write() -> Mapping[KvKeyTuple, object]:
                     start=pack_key(("bigint", 1)), end=pack_key(("bigint", 2)), limit=1
                 ),
             ],
-            [[(KvKey("bigint", 1), 20)]],
+            [[(KvKey("bigint", 1), JSBigInt(20))]],
             id="set",
         ),
         pytest.param(
@@ -879,7 +880,7 @@ def example_entries_write() -> Mapping[KvKeyTuple, object]:
                     Mutation(
                         key=pack_key(("bigint", 1)),
                         value=KvValue(
-                            data=bytes(v8_bigint_encoder.encode(20)),
+                            data=bytes(default_v8_encoder.encode(JSBigInt(20))),
                             encoding=ValueEncoding.VE_V8,
                         ),
                         mutation_type=MutationType.M_SUM,
@@ -891,7 +892,7 @@ def example_entries_write() -> Mapping[KvKeyTuple, object]:
                     start=pack_key(("bigint", 1)), end=pack_key(("bigint", 2)), limit=1
                 ),
             ],
-            [[(KvKey("bigint", 1), 30)]],
+            [[(KvKey("bigint", 1), JSBigInt(30))]],
             id="sum",
         ),
     ],

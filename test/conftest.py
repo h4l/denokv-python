@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
 from google.protobuf.message import Message
 from pytest import Config
+from v8serialize import Encoder
 
 from denokv._pycompat.typing import Sequence
 from test import advance_time
@@ -51,3 +53,8 @@ def pytest_assertrepr_compare(
         )
         return comparison
     return None
+
+
+@pytest.fixture(scope="session")
+def v8_encoder() -> Encoder:
+    return Encoder()

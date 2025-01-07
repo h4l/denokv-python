@@ -71,7 +71,6 @@ from denokv.datapath import parse_protobuf_kv_entry
 from denokv.errors import InvalidCursor
 from denokv.kv import AnyCursorFormat
 from denokv.kv import ListContext
-from denokv.kv import create_default_v8_encoder
 from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok
@@ -134,11 +133,8 @@ def decode_js_number_as_float(
     return next(tag)
 
 
-v8_bigint_decoder = v8serialize.Decoder(
-    decode_steps=[decode_js_number_as_float, *v8serialize.default_decode_steps]
-)
-"""Decodes JS Number as float and BigInt as int."""
-v8_bigint_encoder = create_default_v8_encoder()
+default_v8_decoder = v8serialize.Decoder()
+default_v8_encoder = v8serialize.Encoder()
 
 
 def assume_ok(result: Result[T, E]) -> T:
@@ -571,7 +567,7 @@ def decode_number_value(
 
 def decode_v8_number(data: bytes) -> int | float:
     try:
-        value = v8_bigint_decoder.decodes(data)
+        value = default_v8_decoder.decodes(data)
     except v8serialize.V8SerializeError as e:
         raise ValueError("data is not a valid V8-serialized value") from e
     if not isinstance(value, (int, float)):
@@ -581,7 +577,7 @@ def decode_v8_number(data: bytes) -> int | float:
 
 def encode_number_value(value: int | float, encoding: ValueEncoding) -> bytes:
     if encoding == ValueEncoding.VE_V8:
-        return bytes(v8_bigint_encoder.encode(value))
+        return bytes(default_v8_encoder.encode(value))
     elif encoding == ValueEncoding.VE_LE64:
         if isinstance(value, float):
             raise TypeError("Cannot encode float as LE64")
@@ -610,7 +606,7 @@ def encode_kv_write_value(value: object, expires_at_ms: int = 0) -> KvWriteValue
 
 def decode_enqueue_message(enqueue: Enqueue) -> MockKvDbMessage:
     try:
-        payload_value = v8_bigint_decoder.decodes(enqueue.payload)
+        payload_value = default_v8_decoder.decodes(enqueue.payload)
     except v8serialize.V8SerializeError as e:
         raise ValueError("Enqueue payload is not a valid V8-encoded value") from e
     keys_if_undelivered = list[KvKey]()
@@ -788,9 +784,9 @@ def unsafe_parse_protobuf_kv_entry(
     raw: ProtobufKvEntry, v8_decoder: v8serialize.Decoder | None = None
 ) -> KvEntry:
     if v8_decoder is None:
-        v8_decoder = v8_bigint_decoder
+        v8_decoder = default_v8_decoder
     key, value, versionstamp = assume_ok(
-        parse_protobuf_kv_entry(raw, v8_decoder=v8_bigint_decoder, le64_type=KvU64)
+        parse_protobuf_kv_entry(raw, v8_decoder=v8_decoder, le64_type=KvU64)
     )
     return KvEntry(KvKey.wrap_tuple_keys(key), value, VersionStamp(versionstamp))
 

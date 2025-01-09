@@ -26,6 +26,7 @@ from google.protobuf.message import Message
 from v8serialize.constants import SerializationTag
 from v8serialize.decode import DecodeContext
 from v8serialize.decode import DecodeNextFn
+from v8serialize.jstypes import JSBigInt
 from yarl import URL
 
 from denokv._datapath_pb2 import AtomicWrite
@@ -47,6 +48,7 @@ from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
 from denokv._kv_writes import LimitExceededPolicy
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.enum import EvalEnumRepr
 from denokv._pycompat.protobuf import enum_name
 from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import Callable
@@ -159,6 +161,38 @@ def assume_err(result: Result[T, E], type: type[E2] | None = None) -> E | E2:
     raise AssertionError(
         f"result is an Err but its value is not instanceof {type.__name__}"
     )
+
+
+@dataclass(repr=False)
+class KvNumberEncoding:
+    py_name: str
+    js_name: str | None
+    value_encoding: ValueEncoding
+
+
+class KvNumber(KvNumberEncoding, EvalEnumRepr):
+    """
+    The number types supported by datapath Sum/Min/Max operations.
+
+    Examples
+    --------
+    >>> f'Foo bar: {KvNumber.bigint}'
+    'Foo bar: JSBigInt (VE_V8 BigInt)'
+    >>> f'Foo bar: {KvNumber.u64}'
+    'Foo bar: KvU64 (VE_LE64)'
+    >>> repr(KvNumber.bigint)
+    'KvNumber.bigint'
+    """
+
+    bigint = "JSBigInt", "BigInt", ValueEncoding.VE_V8
+    float = "int/float", "Number", ValueEncoding.VE_V8
+    u64 = "KvU64", None, ValueEncoding.VE_LE64
+
+    def __str__(self) -> str:
+        ve_name = enum_name(ValueEncoding, self.value_encoding)
+        if self.js_name is None:
+            return f"{self.py_name} ({ve_name})"
+        return f"{self.py_name} ({ve_name} {self.js_name})"
 
 
 @dataclass(**slots_if310(), frozen=True)
@@ -354,6 +388,10 @@ class MockKvDb:
                 or mut.mutation_type == MutationType.M_MIN
                 or mut.mutation_type == MutationType.M_MAX
             ):
+                # FIXME: Check this again, I don't think KvU64 actually allows
+                #        bigint operands with the sqlite implementation. Does
+                #        the FoundationDB impl act differently?
+                #
                 # Deno KV allows sum(left, right) with certain combinations of
                 # types:
                 #
@@ -384,29 +422,19 @@ class MockKvDb:
                 else:
                     current_encoding, current_value = decode_number_value(current)
 
-                op = _get_number_operator(mut, current_encoding=current_encoding)
+                op = _get_number_operator(mut, operand_encoding=operand_encoding)
 
                 if not _is_allowed_op_combination(
                     op,
                     (current_encoding, current_value),
                     (operand_encoding, operand_value),
                 ):
-                    left_desc = "{} ({})".format(
-                        None
-                        if current_encoding is None
-                        else enum_name(ValueEncoding, current_encoding),
-                        type(current_value),
-                    )
-                    right_desc = "{} ({})".format(
-                        None
-                        if operand_encoding is None
-                        else enum_name(ValueEncoding, operand_encoding),
-                        type(operand_value),
-                    )
                     raise ValueError(
                         f"Cannot apply operation "
-                        f"{enum_name(MutationType, mut.mutation_type)}"
-                        f"({left_desc}, {right_desc})"
+                        f"{enum_name(MutationType, mut.mutation_type)}, "
+                        f"number types are incompatible: "
+                        f"current type: {current_encoding}, "
+                        f"operand type: {operand_encoding}"
                     )
 
                 try:
@@ -421,7 +449,7 @@ class MockKvDb:
 
                 mutation_entries[key_bytes] = KvWriteValue(
                     data=encode_number_value(result, result_encoding),
-                    encoding=result_encoding,
+                    encoding=result_encoding.value_encoding,
                     expire_at_ms=expires_at_ms,
                 )
             elif mut.mutation_type == MutationType.M_SET_SUFFIX_VERSIONSTAMPED_KEY:
@@ -444,57 +472,60 @@ class MockKvDb:
 
 
 def _is_allowed_op_combination(
-    op: Callable[[float, float], float] | MutationSumOperator | None,
-    left: tuple[ValueEncoding | None, float],
-    right: tuple[ValueEncoding | None, float],
-) -> TypeIs[Callable[[float, float], float] | MutationSumOperator]:
+    op: Callable[[int | float, int | float], int | float] | MutationSumOperator | None,
+    left: tuple[KvNumber | None, int | float],
+    right: tuple[KvNumber, int | float],
+) -> TypeIs[Callable[[int | float, int | float], int | float] | MutationSumOperator]:
     left_encoding, left_value = left
     right_encoding, right_value = right
+
+    def values_are(types: type | tuple[type, ...]) -> bool:
+        return isinstance(left_value, types) and isinstance(right_value, types)
+
     if isinstance(op, MutationSumOperator):
-        if left_encoding == ValueEncoding.VE_LE64:
-            return right_encoding == ValueEncoding.VE_LE64 or (
-                right_encoding == ValueEncoding.VE_V8 and isinstance(right_value, int)
+        if left_encoding is KvNumber.u64:
+            return (
+                right_encoding is KvNumber.u64
+                or (right_encoding is KvNumber.bigint)
+                and values_are(int)
             )
-        elif left_encoding == ValueEncoding.VE_V8:
-            return type(left_value) is type(right_value)
+        elif left_encoding is KvNumber.bigint:
+            return right_encoding is KvNumber.bigint and values_are(JSBigInt)
+        elif left_encoding is KvNumber.float:
+            return right_encoding is KvNumber.float
         elif left_encoding is None:
             # Sum can be used with a missing left operand.
-            return right_encoding == ValueEncoding.VE_LE64 or (
-                right_encoding == ValueEncoding.VE_V8
-                and isinstance(right_value, (int, float))
-            )
+            return right_encoding is KvNumber.float or values_are(int)
     elif op is min or op is max:
         return (
-            left_encoding == ValueEncoding.VE_LE64
-            or left_encoding is None
-            and right_encoding == ValueEncoding.VE_LE64
+            left_encoding in (KvNumber.u64, None)
+            and right_encoding is KvNumber.u64
+            and values_are(int)
         )
     raise AssertionError(f"Unexpected op combinations: {op=}, {left=}, {right=}")
 
 
 def _get_number_operator(
-    mut: Mutation, *, current_encoding: ValueEncoding | None
+    mut: Mutation, *, operand_encoding: KvNumber
 ) -> Callable[[float, float], float] | None:
     if mut.mutation_type == MutationType.M_SUM:
-        min_ = decode_v8_number(mut.sum_min) if mut.sum_min else None
-        max_ = decode_v8_number(mut.sum_max) if mut.sum_max else None
         if (
-            min_ is not None or max_ is not None or mut.sum_clamp
+            mut.sum_min or mut.sum_max or mut.sum_clamp
         ) and mut.value.encoding != ValueEncoding.VE_V8:
-            raise ValueError("Mutation used sum_min/sum_min with non-V8 encoding")
-        if min_ is not None and max_ is not None and type(min_) is not type(max_):
             raise ValueError(
-                "Mutation used different number types for sum_min and sum_max"
+                "Mutation used sum_min/sum_max/sum_clamp with non-V8 encoding"
             )
-
-        if (
-            current_encoding == ValueEncoding.VE_LE64
-            or mut.value.encoding == ValueEncoding.VE_LE64
-        ):
-            if mut.sum_min or mut.sum_max or mut.sum_clamp:
-                raise ValueError("Mutation used custom sum limit with LE64 value")
+        if mut.value.encoding == ValueEncoding.VE_LE64:
             return MutationSumOperator(0, 2**64 - 1, LimitExceededPolicy.WRAP)
 
+        min_enc, min_ = decode_v8_number(mut.sum_min) if mut.sum_min else (None, None)
+        max_enc, max_ = decode_v8_number(mut.sum_max) if mut.sum_max else (None, None)
+        if (min_enc and min_enc is not operand_encoding) or (
+            max_enc and max_enc is not operand_encoding
+        ):
+            raise ValueError(
+                "Mutation used different number types for value/sum_min/sum_max"
+            )
         boundary = (
             LimitExceededPolicy.CLAMP if mut.sum_clamp else LimitExceededPolicy.ERROR
         )
@@ -514,16 +545,7 @@ class MutationSumOperator:
 
     def __call__(self, left: int | float, right: int | float) -> int | float:
         min, max = self.min, self.max
-        if type(left) is not type(right):
-            raise TypeError(f"left and right must be the same type: {left=}, {right=}")
-        if (min is not None and type(min) is not type(left)) or (
-            max is not None and type(max) is not type(left)
-        ):
-            raise TypeError(
-                "sum min/max value is a different number type than the operand values"
-            )
-        if type(left) is not type(right):
-            raise TypeError(f"left and right must be the same type: {left=}, {right=}")
+
         result = left + right
         if self.boundary is LimitExceededPolicy.WRAP:
             # wrap is only used for uint64
@@ -553,36 +575,36 @@ class MutationSumOperator:
 
 def decode_number_value(
     entry: MockKvDbEntry | KvWriteValue | KvValue,
-) -> tuple[ValueEncoding, int | float]:
+) -> tuple[KvNumber, int | float]:
     if entry.encoding == ValueEncoding.VE_LE64:
-        return ValueEncoding.VE_LE64, KvU64(entry.data).value
+        return KvNumber.u64, KvU64(entry.data).value
     elif entry.encoding == ValueEncoding.VE_V8:
-        value = v8serialize.loads(entry.data)
-        if not isinstance(value, (int, float)):
-            raise ValueError("entry's value is not a V8-encoded BigInt or Number")
-        return ValueEncoding.VE_V8, value
+        return decode_v8_number(entry.data)
     else:
         raise ValueError("entry value is not an LE64 or V8-encoded BigInt or Number")
 
 
-def decode_v8_number(data: bytes) -> int | float:
-    try:
-        value = default_v8_decoder.decodes(data)
-    except v8serialize.V8SerializeError as e:
-        raise ValueError("data is not a valid V8-serialized value") from e
-    if not isinstance(value, (int, float)):
-        raise ValueError("V8-serialized value is not a BigInt or Number")
-    return value
+def decode_v8_number(data: bytes) -> tuple[KvNumber, int | float]:
+    value = default_v8_decoder.decodes(data)
+    if type(value) is JSBigInt:
+        return KvNumber.bigint, value
+    if type(value) in (int, float):
+        return KvNumber.float, cast(int | float, value)
+    raise ValueError("V8-serialized value is not a BigInt or Number")
 
 
-def encode_number_value(value: int | float, encoding: ValueEncoding) -> bytes:
-    if encoding == ValueEncoding.VE_V8:
-        return bytes(default_v8_encoder.encode(value))
-    elif encoding == ValueEncoding.VE_LE64:
+def encode_number_value(value: int | float, encoding: KvNumber) -> bytes:
+    if encoding is KvNumber.float:
+        return bytes(default_v8_encoder.encode(float(value)))
+    elif encoding is KvNumber.bigint:
+        if isinstance(value, float):
+            raise TypeError("Cannot encode float as V8 BigInt")
+        return bytes(default_v8_encoder.encode(JSBigInt(value)))
+    else:
+        assert encoding is KvNumber.u64
         if isinstance(value, float):
             raise TypeError("Cannot encode float as LE64")
         return KvU64(value).to_bytes()
-    raise ValueError(f"encoding is not LE64 or V8: {encoding}")
 
 
 def encode_kv_write_value(value: object, expires_at_ms: int = 0) -> KvWriteValue:

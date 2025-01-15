@@ -114,6 +114,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
+source = ["denokv"]
 omit = [
     # generated Protocol Buffers module
     "*/denokv/_datapath_pb2.py",

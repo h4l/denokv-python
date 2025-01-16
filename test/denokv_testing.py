@@ -789,7 +789,9 @@ def meta_endpoint(meta: DatabaseMetadata) -> tuple[DatabaseMetadata, EndpointInf
 
 def add_entries(
     db: MockKvDb,
-    entries: Mapping[KvKeyTuple, object] | Iterable[tuple[KvKeyTuple, object]],
+    entries: Mapping[AnyKvKey, object]
+    | Mapping[KvKeyTuple, object]
+    | Iterable[tuple[AnyKvKey, object]],
 ) -> VersionStamp:
     if isinstance(entries, Mapping):
         entries = entries.items()

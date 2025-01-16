@@ -28,7 +28,12 @@ def add_note(exc: BaseException, note: str) -> None:
 ExceptionT = TypeVar("ExceptionT", bound=BaseException)
 
 
-def with_notes(exc: ExceptionT, *notes: str) -> ExceptionT:
+def with_notes(
+    exc: ExceptionT, *notes: str, from_exception: BaseException | None = None
+) -> ExceptionT:
+    if from_exception and has_notes(from_exception):
+        for note in from_exception.__notes__:
+            add_note(exc, note)
     for note in notes:
         add_note(exc, note)
     return exc

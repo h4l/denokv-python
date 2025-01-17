@@ -71,6 +71,7 @@ async def test_as_protobuf(
         .check(Check(KvKey("check2"), VersionStamp(2)))
         .check_key_not_set(KvKey("check3"))
         .check_key_has_version(KvKey("check4"), VersionStamp(4))
+        .check(KvKey("check5"))
         .sum(KvKey("sum1"), KvU64(1))
         .sum(KvKey("sum2"), 2.0, abort_under=0)
         .sum(KvKey("sum3"), 0.2, clamp_under=0, clamp_over=1)
@@ -100,6 +101,7 @@ async def test_as_protobuf(
                     Check(KvKey("check2"), VersionStamp(2)),
                     Check(KvKey("check3"), None),
                     Check(KvKey("check4"), VersionStamp(4)),
+                    Check(KvKey("check5"), None),
                 ]
                 for pb_msg in check.as_protobuf(v8_encoder=v8_encoder)
             ],

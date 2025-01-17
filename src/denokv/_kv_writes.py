@@ -75,6 +75,9 @@ NumberT_co = TypeVar(
 )
 KvNumberTypeT_co = TypeVar("KvNumberTypeT_co", covariant=True, default=object)
 U = TypeVar("U")
+MutateResultT = TypeVar("MutateResultT")
+EnqueueResultT = TypeVar("EnqueueResultT")
+CheckResultT = TypeVar("CheckResultT")
 
 
 @total_ordering
@@ -821,8 +824,419 @@ class SumArgs(
     )
 
 
+class CheckMixin(Generic[CheckResultT]):
+    @abstractmethod
+    def _check(self, check: CheckRepresentation, /) -> CheckResultT:
+        raise NotImplementedError
+
+    @overload
+    def check(
+        self, key: AnyKvKey, versionstamp: VersionStamp | None = None
+    ) -> CheckResultT: ...
+
+    @overload
+    def check(self, check: CheckRepresentation, /) -> CheckResultT: ...
+
+    @overload
+    def check(self, check: AnyKeyVersion, /) -> CheckResultT: ...
+
+    def check(
+        self,
+        key: CheckRepresentation | AnyKeyVersion | AnyKvKey,
+        versionstamp: VersionStamp | None = None,
+    ) -> CheckResultT:
+        if isinstance(key, CheckRepresentation):
+            if versionstamp is not None:
+                raise TypeError(
+                    "'versionstamp' argument cannot be set when the first argument "
+                    "to check() is an object with an 'as_protobuf' method"
+                )
+            return self._check(key)
+        elif isinstance(key, AnyKeyVersion):
+            if versionstamp is not None:
+                raise TypeError(
+                    "'versionstamp' argument cannot be set when the first argument "
+                    "to check() is an object with 'key' and 'versionstamp' attributes"
+                )
+            return self._check(Check(key.key, key.versionstamp))
+        else:
+            return self._check(Check(key, versionstamp))
+
+    def check_key_has_version(
+        self, key: AnyKvKey, versionstamp: VersionStamp
+    ) -> CheckResultT:
+        return self._check(Check.for_key_with_version(key, versionstamp))
+
+    def check_key_not_set(self, key: AnyKvKey) -> CheckResultT:
+        return self._check(Check.for_key_not_set(key))
+
+
+class MutatorMixin(Generic[MutateResultT]):
+    @abstractmethod
+    def mutate(self, mutation: MutationRepresentation) -> MutateResultT:
+        raise NotImplementedError
+
+
+class SetMutatorMixin(MutatorMixin[MutateResultT]):
+    def set(
+        self, key: AnyKvKey, value: object, *, versioned: bool = False
+    ) -> MutateResultT:
+        return self.mutate(Set(key, value, versioned=versioned))
+
+
+class SumMutatorMixin(MutatorMixin[MutateResultT]):
+    # The overloads here have two categories: Firstly overloads based on known
+    # Known KvNumber enum numbers — bigint, float and u64. Secondly,
+    # generic/catch-all for any KvNumberInfo instance.
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[SumOptions[int]],
+    ) -> MutateResultT: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[SumOptions[int]],
+    ) -> MutateResultT: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: KvU64,
+        number_type: None = None,
+        **options: Unpack[SumOptions[int]],
+    ) -> MutateResultT: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: int | KvU64,
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[SumOptions[int]],
+    ) -> MutateResultT: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[SumOptions[float]],
+    ) -> MutateResultT: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[SumOptions[NumberT]],
+    ) -> MutateResultT: ...
+
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[SumOptions[NumberT]],
+    ) -> MutateResultT:
+        delta = cast(NumberT | KvNumberTypeT, delta)
+        number_type = cast(
+            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
+        )
+        return self.mutate(Sum(key, delta, number_type, **options))
+
+    def sum_bigint(
+        self,
+        key: AnyKvKey,
+        delta: int | JSBigInt,
+        **options: Unpack[SumOptions[int]],
+    ) -> MutateResultT:
+        return self.sum(key, delta, number_type=KvNumber.bigint, **options)
+
+    def sum_float(
+        self,
+        key: AnyKvKey,
+        delta: float,
+        **options: Unpack[SumOptions[float]],
+    ) -> MutateResultT:
+        return self.sum(key, delta, number_type=KvNumber.float, **options)
+
+    def sum_kvu64(
+        self,
+        key: AnyKvKey,
+        delta: int | KvU64,
+        **options: Unpack[SumOptions[int]],
+    ) -> MutateResultT:
+        return self.sum(key, delta, number_type=KvNumber.u64, **options)
+
+
+class MinMutatorMixin(MutatorMixin[MutateResultT]):
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: KvU64,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: int | KvU64,
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    def min(
+        self,
+        key: AnyKvKey,
+        value: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT:
+        value = cast(NumberT | KvNumberTypeT, value)
+        number_type = cast(
+            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
+        )
+        return self.mutate(Min(key, value, number_type, **options))
+
+    def min_bigint(
+        self,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT:
+        return self.min(key, value, number_type=KvNumber.bigint, **options)
+
+    def min_float(
+        self,
+        key: AnyKvKey,
+        value: float,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT:
+        return self.min(key, value, number_type=KvNumber.float, **options)
+
+    def min_kvu64(
+        self,
+        key: AnyKvKey,
+        value: int | KvU64,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT:
+        return self.min(key, value, number_type=KvNumber.u64, **options)
+
+
+class MaxMutatorMixin(MutatorMixin[MutateResultT]):
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: KvU64,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: int | KvU64,
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT: ...
+
+    def max(
+        self,
+        key: AnyKvKey,
+        value: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT:
+        value = cast(NumberT | KvNumberTypeT, value)
+        number_type = cast(
+            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
+        )
+        return self.mutate(Max(key, value, number_type, **options))
+
+    def max_bigint(
+        self,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT:
+        return self.max(key, value, number_type=KvNumber.bigint, **options)
+
+    def max_float(
+        self,
+        key: AnyKvKey,
+        value: float,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT:
+        return self.max(key, value, number_type=KvNumber.float, **options)
+
+    def max_kvu64(
+        self,
+        key: AnyKvKey,
+        value: int | KvU64,
+        **options: Unpack[MutationOptions],
+    ) -> MutateResultT:
+        return self.max(key, value, number_type=KvNumber.u64, **options)
+
+
+class DeleteMutatorMixin(MutatorMixin[MutateResultT]):
+    def delete(self, key: AnyKvKey) -> MutateResultT:
+        if isinstance(key, Delete):
+            return self.mutate(key)
+        return self.mutate(Delete(key))
+
+
+class EnqueueMixin(Generic[EnqueueResultT]):
+    @abstractmethod
+    def _enqueue(self, enqueue: Enqueue, /) -> EnqueueResultT:
+        raise NotImplementedError
+
+    @overload
+    def enqueue(self, enqueue: Enqueue, /) -> EnqueueResultT: ...
+
+    @overload
+    def enqueue(
+        self,
+        message: object,
+        *,
+        delivery_time: datetime | None = None,
+        retry_delays: Backoff | None = None,
+        dead_letter_keys: Sequence[AnyKvKey] | None = None,
+    ) -> EnqueueResultT: ...
+
+    def enqueue(
+        self,
+        message: object | Enqueue,
+        *,
+        delivery_time: datetime | None = None,
+        retry_delays: Backoff | None = None,
+        dead_letter_keys: Sequence[AnyKvKey] | None = None,
+    ) -> EnqueueResultT:
+        if isinstance(message, Enqueue):
+            enqueue = message
+        else:
+            enqueue = Enqueue(
+                message,
+                delivery_time=delivery_time,
+                retry_delays=retry_delays,
+                dead_letter_keys=dead_letter_keys,
+            )
+        return self._enqueue(enqueue)
+
+
 @dataclass
-class PlannedWrite(AtomicWriteRepresentationWriter["CompletedWrite"]):
+class PlannedWrite(
+    CheckMixin["PlannedWrite"],
+    SetMutatorMixin["PlannedWrite"],
+    SumMutatorMixin["PlannedWrite"],
+    MinMutatorMixin["PlannedWrite"],
+    MaxMutatorMixin["PlannedWrite"],
+    DeleteMutatorMixin["PlannedWrite"],
+    EnqueueMixin["PlannedWrite"],
+    AtomicWriteRepresentationWriter["CompletedWrite"],
+):
     kv: KvWriter | None = field(default=None)
     checks: MutableSequence[CheckRepresentation] = field(default_factory=list)
     mutations: MutableSequence[MutationRepresentation] = field(default_factory=list)
@@ -900,379 +1314,18 @@ class PlannedWrite(AtomicWriteRepresentationWriter["CompletedWrite"]):
             ),
         )
 
-    @overload
-    def check(self, key: AnyKvKey, versionstamp: VersionStamp | None) -> Self: ...
-
-    @overload
-    def check(self, check: CheckRepresentation, /) -> Self: ...
-
-    @overload
-    def check(self, check: AnyKeyVersion, /) -> Self: ...
-
-    def check(
-        self,
-        key: CheckRepresentation | AnyKeyVersion | AnyKvKey,
-        versionstamp: VersionStamp | None = None,
-    ) -> Self:
-        if isinstance(key, CheckRepresentation):
-            if versionstamp is not None:
-                raise TypeError(
-                    "'versionstamp' argument cannot be set when the first argument "
-                    "to check() is an object with an 'as_protobuf' method"
-                )
-            self.checks.append(key)
-        elif isinstance(key, AnyKeyVersion):
-            if versionstamp is not None:
-                raise TypeError(
-                    "'versionstamp' argument cannot be set when the first argument "
-                    "to check() is an object with 'key' and 'versionstamp' attributes"
-                )
-            self.checks.append(Check(key.key, key.versionstamp))
-        else:
-            self.checks.append(Check(key, versionstamp))
+    @override
+    def _check(self, check: CheckRepresentation, /) -> Self:
+        self.checks.append(check)
         return self
 
-    def check_key_has_version(self, key: AnyKvKey, versionstamp: VersionStamp) -> Self:
-        self.checks.append(Check.for_key_with_version(key, versionstamp))
-        return self
-
-    def check_key_not_set(self, key: AnyKvKey) -> Self:
-        self.checks.append(Check.for_key_not_set(key))
-        return self
-
-    def set(self, key: AnyKvKey, value: object, *, versioned: bool = False) -> Self:
-        return self.mutate(Set(key, value, versioned=versioned))
-
-    # The overloads here have two categories: Firstly overloads based on known
-    # Known KvNumber enum numbers — bigint, float and u64. Secondly,
-    # generic/catch-all for any KvNumberInfo instance.
-    @overload
-    def sum(
-        self,
-        key: AnyKvKey,
-        delta: JSBigInt,
-        number_type: None = None,
-        **options: Unpack[SumOptions[int]],
-    ) -> Self: ...
-
-    @overload
-    def sum(
-        self,
-        key: AnyKvKey,
-        delta: int | JSBigInt,
-        number_type: BigIntKvNumberIdentifier,
-        **options: Unpack[SumOptions[int]],
-    ) -> Self: ...
-
-    @overload
-    def sum(
-        self,
-        key: AnyKvKey,
-        delta: KvU64,
-        number_type: None = None,
-        **options: Unpack[SumOptions[int]],
-    ) -> Self: ...
-
-    @overload
-    def sum(
-        self,
-        key: AnyKvKey,
-        delta: int | KvU64,
-        number_type: U64KvNumberIdentifier,
-        **options: Unpack[SumOptions[int]],
-    ) -> Self: ...
-
-    @overload
-    def sum(
-        self,
-        key: AnyKvKey,
-        delta: float,
-        number_type: FloatKvNumberIdentifier | None = None,
-        **options: Unpack[SumOptions[float]],
-    ) -> Self: ...
-
-    @overload
-    def sum(
-        self,
-        key: AnyKvKey,
-        delta: NumberT | KvNumberTypeT,
-        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
-        # Can't use float limits unless the float type is explicitly being used,
-        # as float is incompatible with the other number types, but int is
-        # compatible.
-        **options: Unpack[SumOptions[NumberT]],
-    ) -> Self: ...
-
-    def sum(
-        self,
-        key: AnyKvKey,
-        delta: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
-        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
-        | KvNumberIdentifier
-        | None = None,
-        **options: Unpack[SumOptions[NumberT]],
-    ) -> Self:
-        delta = cast(NumberT | KvNumberTypeT, delta)
-        number_type = cast(
-            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
-        )
-        return self.mutate(Sum(key, delta, number_type, **options))
-
-    def sum_bigint(
-        self,
-        key: AnyKvKey,
-        delta: int | JSBigInt,
-        **options: Unpack[SumOptions[int]],
-    ) -> Self:
-        return self.sum(key, delta, number_type=KvNumber.bigint, **options)
-
-    def sum_float(
-        self,
-        key: AnyKvKey,
-        delta: float,
-        **options: Unpack[SumOptions[float]],
-    ) -> Self:
-        return self.sum(key, delta, number_type=KvNumber.float, **options)
-
-    def sum_kvu64(
-        self,
-        key: AnyKvKey,
-        delta: int | KvU64,
-        **options: Unpack[SumOptions[int]],
-    ) -> Self:
-        return self.sum(key, delta, number_type=KvNumber.u64, **options)
-
-    @overload
-    def min(
-        self,
-        key: AnyKvKey,
-        value: JSBigInt,
-        number_type: None = None,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def min(
-        self,
-        key: AnyKvKey,
-        value: int | JSBigInt,
-        number_type: BigIntKvNumberIdentifier,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def min(
-        self,
-        key: AnyKvKey,
-        value: KvU64,
-        number_type: None = None,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def min(
-        self,
-        key: AnyKvKey,
-        value: int | KvU64,
-        number_type: U64KvNumberIdentifier,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def min(
-        self,
-        key: AnyKvKey,
-        value: float,
-        number_type: FloatKvNumberIdentifier | None = None,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def min(
-        self,
-        key: AnyKvKey,
-        value: NumberT | KvNumberTypeT,
-        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
-        # Can't use float limits unless the float type is explicitly being used,
-        # as float is incompatible with the other number types, but int is
-        # compatible.
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    def min(
-        self,
-        key: AnyKvKey,
-        value: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
-        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
-        | KvNumberIdentifier
-        | None = None,
-        **options: Unpack[MutationOptions],
-    ) -> Self:
-        value = cast(NumberT | KvNumberTypeT, value)
-        number_type = cast(
-            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
-        )
-        return self.mutate(Min(key, value, number_type, **options))
-
-    def min_bigint(
-        self,
-        key: AnyKvKey,
-        value: int | JSBigInt,
-        **options: Unpack[MutationOptions],
-    ) -> Self:
-        return self.min(key, value, number_type=KvNumber.bigint, **options)
-
-    def min_float(
-        self,
-        key: AnyKvKey,
-        value: float,
-        **options: Unpack[MutationOptions],
-    ) -> Self:
-        return self.min(key, value, number_type=KvNumber.float, **options)
-
-    def min_kvu64(
-        self,
-        key: AnyKvKey,
-        value: int | KvU64,
-        **options: Unpack[MutationOptions],
-    ) -> Self:
-        return self.min(key, value, number_type=KvNumber.u64, **options)
-
-    @overload
-    def max(
-        self,
-        key: AnyKvKey,
-        value: JSBigInt,
-        number_type: None = None,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def max(
-        self,
-        key: AnyKvKey,
-        value: int | JSBigInt,
-        number_type: BigIntKvNumberIdentifier,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def max(
-        self,
-        key: AnyKvKey,
-        value: KvU64,
-        number_type: None = None,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def max(
-        self,
-        key: AnyKvKey,
-        value: int | KvU64,
-        number_type: U64KvNumberIdentifier,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def max(
-        self,
-        key: AnyKvKey,
-        value: float,
-        number_type: FloatKvNumberIdentifier | None = None,
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    @overload
-    def max(
-        self,
-        key: AnyKvKey,
-        value: NumberT | KvNumberTypeT,
-        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
-        # Can't use float limits unless the float type is explicitly being used,
-        # as float is incompatible with the other number types, but int is
-        # compatible.
-        **options: Unpack[MutationOptions],
-    ) -> Self: ...
-
-    def max(
-        self,
-        key: AnyKvKey,
-        value: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
-        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
-        | KvNumberIdentifier
-        | None = None,
-        **options: Unpack[MutationOptions],
-    ) -> Self:
-        value = cast(NumberT | KvNumberTypeT, value)
-        number_type = cast(
-            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
-        )
-        return self.mutate(Max(key, value, number_type, **options))
-
-    def max_bigint(
-        self,
-        key: AnyKvKey,
-        value: int | JSBigInt,
-        **options: Unpack[MutationOptions],
-    ) -> Self:
-        return self.max(key, value, number_type=KvNumber.bigint, **options)
-
-    def max_float(
-        self,
-        key: AnyKvKey,
-        value: float,
-        **options: Unpack[MutationOptions],
-    ) -> Self:
-        return self.max(key, value, number_type=KvNumber.float, **options)
-
-    def max_kvu64(
-        self,
-        key: AnyKvKey,
-        value: int | KvU64,
-        **options: Unpack[MutationOptions],
-    ) -> Self:
-        return self.max(key, value, number_type=KvNumber.u64, **options)
-
-    def delete(self, key: AnyKvKey) -> Self:
-        if isinstance(key, Delete):
-            return self.mutate(key)
-        return self.mutate(Delete(key))
-
+    @override
     def mutate(self, mutation: MutationRepresentation) -> Self:
         self.mutations.append(mutation)
         return self
 
-    @overload
-    def enqueue(self, enqueue: Enqueue, /) -> Self: ...
-
-    @overload
-    def enqueue(
-        self,
-        message: object,
-        *,
-        delivery_time: datetime | None = None,
-        retry_delays: Backoff | None = None,
-        dead_letter_keys: Sequence[AnyKvKey] | None = None,
-    ) -> Self: ...
-
-    def enqueue(
-        self,
-        message: object | Enqueue,
-        *,
-        delivery_time: datetime | None = None,
-        retry_delays: Backoff | None = None,
-        dead_letter_keys: Sequence[AnyKvKey] | None = None,
-    ) -> Self:
-        if isinstance(message, Enqueue):
-            enqueue = message
-        else:
-            enqueue = Enqueue(
-                message,
-                delivery_time=delivery_time,
-                retry_delays=retry_delays,
-                dead_letter_keys=dead_letter_keys,
-            )
+    @override
+    def _enqueue(self, enqueue: Enqueue, /) -> Self:
         self.enqueues.append(enqueue)
         return self
 

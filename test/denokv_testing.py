@@ -368,10 +368,12 @@ class MockKvDb:
                 key_tuple = unpack(mut.key)
                 key_bytes = pack(unpack(mut.key))
             except Exception as e:
+                key_tuple = None
                 key_bytes = None
                 cause = e
             if key_bytes != mut.key:
                 raise ValueError(f"Mutation key is not valid: {mut.key!r}") from cause
+            assert key_tuple is not None
 
             expires_at_ms = mut.expire_at_ms
             if expires_at_ms < 0:

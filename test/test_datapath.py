@@ -41,6 +41,7 @@ from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
 from denokv._pycompat.typing import Awaitable
 from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Iterable
 from denokv._pycompat.typing import Mapping
 from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import TypeAlias
@@ -261,7 +262,10 @@ def db_api(mock_db: MockKvDb) -> web.Application:
             ).SerializeToString(),
         )
 
-    async def violation_atomic_write_check_failure_without_failed_checks(
+    # The denokv self-hosted implementation does not return indexes of failed
+    # checks.
+    # https://github.com/denoland/denokv/issues/110
+    async def quirk_atomic_write_check_failure_without_failed_checks(
         request: web.Request,
     ) -> web.Response:
         write = AtomicWrite()
@@ -363,7 +367,7 @@ def db_api(mock_db: MockKvDb) -> web.Application:
     )
     app.router.add_post(
         "/check_failure_without_failed_checks/atomic_write",
-        violation_atomic_write_check_failure_without_failed_checks,
+        quirk_atomic_write_check_failure_without_failed_checks,
     )
     app.router.add_post("/unusable/atomic_write", unusable_atomic_write)
     app.router.add_post(
@@ -781,10 +785,12 @@ async def test_atomic_write__raises_when_given_endpoint_without_strong_consisten
         ),
         (
             "/check_failure_without_failed_checks",
-            lambda endpoint: ProtocolViolation(
-                "Server responded to Data Path Atomic Write with CHECK_FAILURE "
-                "containing no failed checks",
-                data=AtomicWriteOutput(status=AtomicWriteStatus.AW_CHECK_FAILURE),
+            lambda endpoint: CheckFailure(
+                "Not all checks required by the Atomic Write passed",
+                all_checks=[
+                    Check(key=pack_key(("x",)), versionstamp=bytes(VersionStamp(0)))
+                ],
+                failed_check_indexes=[],
                 endpoint=endpoint,
             ),
         ),
@@ -1385,6 +1391,26 @@ def test_CheckFailure(example_endpoint: EndpointInfo) -> None:
     assert msg in str(e)
 
 
+@pytest.mark.parametrize("failed_check_indexes", [None, ()])
+def test_CheckFailure__failed_check_indexes_is_None_when_no_indexes(
+    failed_check_indexes: Iterable[int] | None, example_endpoint: EndpointInfo
+) -> None:
+    checks = [
+        Check(key=bytes(KvKey(f"a{i}")), versionstamp=bytes(VersionStamp(i)))
+        for i in range(4)
+    ]
+    # Failed_check_indexes can be empty (the self-hosted sqlite implementation
+    # does not return the indexes of failed checks).
+    e = CheckFailure(
+        "Foo",
+        all_checks=iter(checks),
+        failed_check_indexes=failed_check_indexes,
+        endpoint=example_endpoint,
+    )
+    assert e.all_checks == tuple(checks)
+    assert e.failed_check_indexes is None
+
+
 def test_CheckFailure__validates_constructor_args(
     example_endpoint: EndpointInfo,
 ) -> None:
@@ -1393,11 +1419,6 @@ def test_CheckFailure__validates_constructor_args(
     with pytest.raises(ValueError, match=r"all_checks is empty"):
         CheckFailure(
             "Foo", all_checks=[], failed_check_indexes=[], endpoint=example_endpoint
-        )
-
-    with pytest.raises(ValueError, match=r"failed_check_indexes is empty"):
-        CheckFailure(
-            "Foo", all_checks=checks, failed_check_indexes=[], endpoint=example_endpoint
         )
 
     with pytest.raises(

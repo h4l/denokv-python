@@ -202,18 +202,19 @@ class CheckFailure(DataPathDenoKvError):
 
     all_checks: tuple[Check, ...]
     """All of the Checks sent with the AtomicWrite."""
-    failed_check_indexes: AbstractSet[int]
+    failed_check_indexes: AbstractSet[int] | None
     """
     The indexes of Checks in all_checks keys whose versionstamp check failed.
 
-    The set is sorted with ascending iteration order.
+    The set is sorted with ascending iteration order. Will be None if the
+    database does not support reporting which checks failed.
     """
 
     def __init__(
         self,
         message: str,
         all_checks: Iterable[Check],
-        failed_check_indexes: Iterable[int],
+        failed_check_indexes: Iterable[int] | None,
         *args: object,
         endpoint: EndpointInfo,
     ) -> None:
@@ -222,12 +223,15 @@ class CheckFailure(DataPathDenoKvError):
         self.all_checks = tuple(all_checks)
         if len(self.all_checks) == 0:
             raise ValueError("all_checks is empty")
-        ordered_indexes = sorted(failed_check_indexes)
-        if len(ordered_indexes) == 0:
-            raise ValueError("failed_check_indexes is empty")
-        if ordered_indexes[0] < 0 or ordered_indexes[-1] >= len(self.all_checks):
+
+        ordered_indexes = sorted(failed_check_indexes) if failed_check_indexes else []
+        if len(ordered_indexes) > 0 and (
+            ordered_indexes[0] < 0 or ordered_indexes[-1] >= len(self.all_checks)
+        ):
             raise IndexError("failed_check_indexes contains out-of-bounds index")
-        self.failed_check_indexes = {i: True for i in ordered_indexes}.keys()
+        self.failed_check_indexes = (
+            {i: True for i in ordered_indexes}.keys() if ordered_indexes else None
+        )
 
 
 DataPathError: TypeAlias = Union[
@@ -534,15 +538,6 @@ async def atomic_write(
             err = ProtocolViolation(
                 "Server responded to Data Path Atomic Write with "
                 "CHECK_FAILURE referencing out-of-bounds check index",
-                data=write_output,
-                endpoint=endpoint,
-            )
-            err.__cause__ = e
-            return Err(err)
-        except ValueError as e:
-            err = ProtocolViolation(
-                "Server responded to Data Path Atomic Write with "
-                "CHECK_FAILURE containing no failed checks",
                 data=write_output,
                 endpoint=endpoint,
             )

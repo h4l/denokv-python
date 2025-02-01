@@ -470,7 +470,7 @@ class KvFlags(Flag):
 DEFAULT_KV_FLAGS: Final = KvFlags.IntAsNumber
 
 
-@dataclass(init=False, **slots_if310())
+@dataclass(init=False)
 class Kv(AbstractAsyncContextManager["Kv", None]):
     """
     Interface to perform requests against a Deno KV database.

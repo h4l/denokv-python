@@ -36,10 +36,19 @@ from denokv._kv_values import KvEntry
 from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
 from denokv._kv_writes import Check
+from denokv._kv_writes import CheckMixin
+from denokv._kv_writes import CheckRepresentation
 from denokv._kv_writes import CompletedWrite
+from denokv._kv_writes import DeleteMutatorMixin
 from denokv._kv_writes import Enqueue
+from denokv._kv_writes import EnqueueMixin
+from denokv._kv_writes import MaxMutatorMixin
+from denokv._kv_writes import MinMutatorMixin
 from denokv._kv_writes import Mutation
+from denokv._kv_writes import MutationRepresentation
 from denokv._kv_writes import PlannedWrite
+from denokv._kv_writes import SetMutatorMixin
+from denokv._kv_writes import SumMutatorMixin
 from denokv._kv_writes import WriteOperation
 from denokv._pycompat.dataclasses import slots_if310
 from denokv._pycompat.typing import Any
@@ -88,6 +97,7 @@ from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
+from denokv.result import is_ok
 
 T = TypeVar("T", default=object)
 # Note that the default arg doesn't seem to work with MyPy yet. The
@@ -369,7 +379,17 @@ DEFAULT_KV_FLAGS: Final = KvFlags.IntAsNumber
 
 
 @dataclass(init=False)
-class Kv(KvWriter, AbstractAsyncContextManager["Kv", None]):
+class Kv(
+    CheckMixin[Awaitable[bool]],
+    SetMutatorMixin[Awaitable[VersionStamp]],
+    SumMutatorMixin[Awaitable[VersionStamp]],
+    MinMutatorMixin[Awaitable[VersionStamp]],
+    MaxMutatorMixin[Awaitable[VersionStamp]],
+    DeleteMutatorMixin[Awaitable[VersionStamp]],
+    EnqueueMixin[Awaitable[VersionStamp]],
+    KvWriter,
+    AbstractAsyncContextManager["Kv", None],
+):
     """
     Interface to perform requests against a Deno KV database.
 
@@ -847,6 +867,29 @@ class Kv(KvWriter, AbstractAsyncContextManager["Kv", None]):
             planned_write = self.atomic(arg, *args)
 
         return await planned_write.write(kv=self, v8_encoder=self.v8_encoder)
+
+    @override
+    async def _check(self, check: CheckRepresentation, /) -> bool:
+        return is_ok(await self.write(check))
+
+    @override
+    async def mutate(self, mutation: MutationRepresentation) -> VersionStamp:
+        result = await self.write(mutation)
+        if is_ok(result):
+            return result.versionstamp
+        # This is a write conflict which we don't expect to occur, because the
+        # shortcut mutation methods (like set(), sum(), etc) don't include
+        # checks.
+        raise result
+
+    @override
+    async def _enqueue(self, enqueue: Enqueue, /) -> VersionStamp:
+        result = await self.write(enqueue)
+        if is_ok(result):
+            return result.versionstamp
+        # This is a write conflict which we don't expect to occur, because the
+        # enqueue() shortcut doesn't include checks.
+        raise result
 
 
 _KvSnapshotReadResult: TypeAlias = Result[

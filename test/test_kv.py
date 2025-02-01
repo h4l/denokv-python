@@ -44,6 +44,8 @@ from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
 from denokv._kv_writes import DEFAULT_ENQUEUE_RETRY_DELAY_COUNT
 from denokv._kv_writes import LIMIT_KVU64
+from denokv._kv_writes import Check
+from denokv._kv_writes import FailedWrite
 from denokv._kv_writes import Limit
 from denokv._kv_writes import SumArgs
 from denokv._pycompat.enum import StrEnum
@@ -977,15 +979,16 @@ async def test_Kv_write__set_versioned(kv: Kv) -> None:
     assert entry and entry.value == "Hi"
 
 
-ErrorPredicate: TypeAlias = Callable[[Exception], bool]
+ErrorPredicate: TypeAlias = Callable[[BaseException | None], bool]
 
 
-def match_client_error(server_msg_content: str) -> Callable[[Exception], bool]:
-    def is_client_error(e: Exception) -> bool:
+def match_client_error(server_msg_content: str) -> ErrorPredicate:
+    def is_client_error(e: BaseException | None) -> bool:
         return (
-            isinstance(e, ResponseUnsuccessful)
-            and e.status == 400
-            and server_msg_content in e.body_text
+            isinstance(e, FailedWrite)
+            and isinstance(e.__cause__, ResponseUnsuccessful)
+            and e.__cause__.status == 400
+            and server_msg_content in e.__cause__.body_text
         )
 
     return is_client_error
@@ -995,6 +998,7 @@ def match_error(
     kind: type[BaseException],
     containing: str | None = None,
     matching: str | re.Pattern[str] | None = None,
+    cause: ErrorPredicate | None = None,
 ) -> ErrorPredicate:
     if containing is not None:
         if matching is not None:
@@ -1003,10 +1007,26 @@ def match_error(
     elif matching is None:
         raise ValueError("containing or matching args must be set")
 
-    def is_error(e: Exception) -> bool:
-        return isinstance(e, kind) and bool(re.search(matching, str(e)))
+    def is_error(e: BaseException | None) -> bool:
+        return (
+            isinstance(e, kind)
+            and bool(re.search(matching, str(e)))
+            and (cause is None or cause(e.__cause__))
+        )
 
     return is_error
+
+
+def match_write_failure(
+    kind: type[BaseException],
+    containing: str | None = None,
+    matching: str | re.Pattern[str] | None = None,
+) -> ErrorPredicate:
+    return match_error(
+        kind=FailedWrite,
+        containing="",
+        cause=match_error(kind, containing=containing, matching=matching),
+    )
 
 
 @asynccontextmanager
@@ -1019,6 +1039,9 @@ async def validate_write_outcome(
 
     if initial_val is not None:
         assert is_ok(await kv.atomic().set(("foo", 0), initial_val).write())
+    else:
+        assert is_ok(await kv.atomic().delete(("foo", 0)).write())
+
     try:
         yield (kv, ("foo", 0))
         assert not match_error, "write succeeded but is expected to fail"
@@ -1083,7 +1106,7 @@ _params_test_Kv_write__sum = pytest.mark.parametrize(
 # fmt: on
 @_params_test_Kv_write__sum
 @pytest_mark_asyncio
-async def test_Kv_write__sum(
+async def test_Kv_write__atomic_sum(
     kv: Kv,
     initial_val: int | float | JSBigInt | KvU64 | None,
     sum_val: int | float | JSBigInt | KvU64,
@@ -1095,7 +1118,21 @@ async def test_Kv_write__sum(
         assert is_ok(await kv.atomic().sum(**sum_args).write())  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize(
+@_params_test_Kv_write__sum
+@pytest_mark_asyncio
+async def test_Kv_write__sum(
+    kv: Kv,
+    initial_val: int | float | JSBigInt | KvU64 | None,
+    sum_val: int | float | JSBigInt | KvU64,
+    sum_kwargs: SumArgs[Any, Any, Any],
+    result: int | float | KvU64 | Callable[[Exception], bool],
+) -> None:
+    async with validate_write_outcome(kv, initial_val, result) as (kv, key):
+        sum_args = SumArgs(key=key, delta=sum_val, **sum_kwargs)
+        assert isinstance(await kv.sum(**sum_args), VersionStamp)  # type: ignore[arg-type]
+
+
+_params_test_Kv_write__max = pytest.mark.parametrize(
     "initial_val, max_val, max_kwargs, result",
     [
         (JSBigInt(12), JSBigInt(3), {}, JSBigInt(12)),
@@ -1111,7 +1148,7 @@ async def test_Kv_write__sum(
             # The errors reference M_SUM because bigint/number implement min/max
             # using clamped M_SUM operations, not the actual M_MIN/M_MAX,
             # because they only support u64.
-            match_error(
+            match_write_failure(
                 ResponseUnsuccessful,
                 "SnapshotWrite is not valid: "
                 "Cannot apply operation M_SUM, number types are incompatible: "
@@ -1123,7 +1160,7 @@ async def test_Kv_write__sum(
             1.5,
             JSBigInt(2),
             {},
-            match_error(
+            match_write_failure(
                 ResponseUnsuccessful,
                 "SnapshotWrite is not valid: "
                 "Cannot apply operation M_SUM, number types are incompatible: "
@@ -1135,7 +1172,7 @@ async def test_Kv_write__sum(
             KvU64(1),
             2.0,
             {},
-            match_error(
+            match_write_failure(
                 ResponseUnsuccessful,
                 "SnapshotWrite is not valid: "
                 "Cannot apply operation M_SUM, number types are incompatible: "
@@ -1147,7 +1184,7 @@ async def test_Kv_write__sum(
             2.0,
             KvU64(1),
             {},
-            match_error(
+            match_write_failure(
                 ResponseUnsuccessful,
                 "SnapshotWrite is not valid: "
                 "Cannot apply operation M_MAX, number types are incompatible: "
@@ -1157,8 +1194,11 @@ async def test_Kv_write__sum(
         ),
     ],
 )
+
+
+@_params_test_Kv_write__max
 @pytest_mark_asyncio
-async def test_Kv_write__max(
+async def test_Kv_write__atomic_max(
     kv: Kv,
     initial_val: int | float | KvU64 | None,
     max_val: KvU64,
@@ -1169,7 +1209,20 @@ async def test_Kv_write__max(
         assert is_ok(await kv.atomic().max(("foo", 0), max_val, **max_kwargs).write())
 
 
-@pytest.mark.parametrize(
+@_params_test_Kv_write__max
+@pytest_mark_asyncio
+async def test_Kv_write__max(
+    kv: Kv,
+    initial_val: int | float | KvU64 | None,
+    max_val: KvU64,
+    max_kwargs: dict[str, Any],
+    result: int | float | KvU64 | Callable[[Exception], bool],
+) -> None:
+    async with validate_write_outcome(kv, initial_val, result):
+        assert isinstance(await kv.max(("foo", 0), max_val, **max_kwargs), VersionStamp)
+
+
+_params_test_Kv_write__min = pytest.mark.parametrize(
     "initial_val, min_val, min_kwargs, result",
     [
         (JSBigInt(12), JSBigInt(3), {}, JSBigInt(3)),
@@ -1185,7 +1238,7 @@ async def test_Kv_write__max(
             # The errors reference M_SUM because bigint/number implement min/max
             # using clamped M_SUM operations, not the actual M_MIN/M_MAX,
             # because they only support u64.
-            match_error(
+            match_write_failure(
                 ResponseUnsuccessful,
                 "SnapshotWrite is not valid: "
                 "Cannot apply operation M_SUM, number types are incompatible: "
@@ -1197,7 +1250,7 @@ async def test_Kv_write__max(
             1.5,
             JSBigInt(2),
             {},
-            match_error(
+            match_write_failure(
                 ResponseUnsuccessful,
                 "SnapshotWrite is not valid: "
                 "Cannot apply operation M_SUM, number types are incompatible: "
@@ -1209,7 +1262,7 @@ async def test_Kv_write__max(
             KvU64(1),
             2.0,
             {},
-            match_error(
+            match_write_failure(
                 ResponseUnsuccessful,
                 "SnapshotWrite is not valid: "
                 "Cannot apply operation M_SUM, number types are incompatible: "
@@ -1221,7 +1274,7 @@ async def test_Kv_write__max(
             2.0,
             KvU64(1),
             {},
-            match_error(
+            match_write_failure(
                 ResponseUnsuccessful,
                 "SnapshotWrite is not valid: "
                 "Cannot apply operation M_MIN, number types are incompatible: "
@@ -1231,8 +1284,11 @@ async def test_Kv_write__max(
         ),
     ],
 )
+
+
+@_params_test_Kv_write__min
 @pytest_mark_asyncio
-async def test_Kv_write__min(
+async def test_Kv_write__atomic_min(
     kv: Kv,
     initial_val: int | float | KvU64 | None,
     min_val: KvU64,
@@ -1243,17 +1299,39 @@ async def test_Kv_write__min(
         assert is_ok(await kv.atomic().min(("foo", 0), min_val, **min_kwargs).write())
 
 
+@_params_test_Kv_write__min
+@pytest_mark_asyncio
+async def test_Kv_write__min(
+    kv: Kv,
+    initial_val: int | float | KvU64 | None,
+    min_val: KvU64,
+    min_kwargs: dict[str, Any],
+    result: int | float | KvU64 | Callable[[Exception], bool],
+) -> None:
+    async with validate_write_outcome(kv, initial_val, result):
+        assert isinstance(await kv.min(("foo", 0), min_val, **min_kwargs), VersionStamp)
+
+
 @pytest.mark.parametrize("initial_val", [None, 42])
 @pytest_mark_asyncio
-async def test_Kv_write__delete(
+async def test_Kv_write__atomic_delete(
     kv: Kv, initial_val: int | float | KvU64 | None
 ) -> None:
     async with validate_write_outcome(kv, initial_val, result=None):
         assert is_ok(await kv.atomic().delete(("foo", 0)).write())
 
 
+@pytest.mark.parametrize("initial_val", [None, 42])
 @pytest_mark_asyncio
-async def test_Kv_write__check__allows_write_when_matching(kv: Kv) -> None:
+async def test_Kv_write__delete(
+    kv: Kv, initial_val: int | float | KvU64 | None
+) -> None:
+    async with validate_write_outcome(kv, initial_val, result=None):
+        assert isinstance(await kv.delete(("foo", 0)), VersionStamp)
+
+
+@pytest_mark_asyncio
+async def test_Kv_write__atomic_check__allows_write_when_matching(kv: Kv) -> None:
     async with validate_write_outcome(kv, None, result=42) as (kv, key):
         assert is_ok(await kv.atomic().check(key, None).set(key, 42).write())
 
@@ -1266,7 +1344,7 @@ async def test_Kv_write__check__allows_write_when_matching(kv: Kv) -> None:
 
 
 @pytest_mark_asyncio
-async def test_Kv_write__check__fails_write_when_mismatching(kv: Kv) -> None:
+async def test_Kv_write__atomic_check__fails_write_when_mismatching(kv: Kv) -> None:
     async with validate_write_outcome(kv, None, result=None) as (kv, key):
         result = await kv.atomic().check(key, VersionStamp(1)).set(key, 42).write()
         assert is_err(result)
@@ -1282,6 +1360,40 @@ async def test_Kv_write__check__fails_write_when_mismatching(kv: Kv) -> None:
         result = await kv.atomic().check(key, initial.versionstamp).set(key, 80).write()
         assert is_err(result)
         assert result.conflicts[key].versionstamp == initial.versionstamp
+
+
+@pytest_mark_asyncio
+async def test_Kv_write__check__returns_False_when_mismatching(kv: Kv) -> None:
+    async with validate_write_outcome(kv, None, result=None) as (kv, key):
+        assert (await kv.check(key, VersionStamp(1))) is False
+        assert (await kv.check(KvEntry(key, None, VersionStamp(1)))) is False
+        assert (await kv.check(Check(key, VersionStamp(1)))) is False
+
+    async with validate_write_outcome(kv, 41, result=41) as (kv, key):
+        _, initial = await kv.get(key)
+        assert initial
+        wrong_ver = VersionStamp(int(initial.versionstamp) + 1)
+        assert (await kv.check(key)) is False
+        assert (await kv.check(key, None)) is False
+        assert (await kv.check(key, wrong_ver)) is False
+        assert (await kv.check(KvEntry(key, None, wrong_ver))) is False
+        assert (await kv.check(Check(key, None))) is False
+        assert (await kv.check(Check(key, wrong_ver))) is False
+
+
+@pytest_mark_asyncio
+async def test_Kv_write__check__returns_True_when_matching(kv: Kv) -> None:
+    async with validate_write_outcome(kv, None, result=None) as (kv, key):
+        assert (await kv.check(key)) is True
+        assert (await kv.check(key, None)) is True
+        assert (await kv.check(Check(key, None))) is True
+
+    async with validate_write_outcome(kv, 41, result=41) as (kv, key):
+        _, initial = await kv.get(key)
+        assert initial
+        assert (await kv.check(key, initial.versionstamp)) is True
+        assert (await kv.check(KvEntry(key, None, initial.versionstamp))) is True
+        assert (await kv.check(Check(key, initial.versionstamp))) is True
 
 
 @pytest_mark_asyncio

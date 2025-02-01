@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
+from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timedelta
 from functools import partial
@@ -982,6 +984,61 @@ async def test_close_via_context_manager() -> None:
     assert kv.session.closed
 
 
+@pytest_mark_asyncio
+async def test_close_via_finalizer__manual() -> None:
+    session = aiohttp.ClientSession()
+    authenticator = Mock()
+    kv = Kv(session=session, auth=authenticator)
+
+    f = kv.create_finalizer()
+    assert isinstance(f, weakref.finalize)
+    assert not session.closed
+
+    result = f()
+    assert isinstance(result, asyncio.Future)
+    await result
+    assert session.closed
+
+
+@pytest_mark_asyncio
+async def test_close_via_finalizer__loop_running__auto() -> None:
+    session = aiohttp.ClientSession()
+    authenticator = Mock()
+
+    def use_kv_and_finalize() -> None:
+        kv = Kv(session=session, auth=authenticator)
+        kv.create_finalizer()
+
+    assert not session.closed
+
+    async with all_inner_tasks_awaited():
+        use_kv_and_finalize()
+
+    assert session.closed
+
+
+def test_close_via_finalizer__loop_not_running() -> None:
+    loop = asyncio.new_event_loop()
+    authenticator = Mock()
+
+    async def create_session() -> aiohttp.ClientSession:
+        return aiohttp.ClientSession()
+
+    session = loop.run_until_complete(create_session())
+
+    def use_kv_and_finalize() -> None:
+        kv = Kv(session=session, auth=authenticator)
+        kv.create_finalizer()
+
+    assert not session.closed
+    assert not loop.is_running()
+
+    use_kv_and_finalize()
+
+    assert session.closed
+    assert not loop.is_running()
+
+
 def test_open_kv__requires_event_loop_to_default_session() -> None:
     with pytest.raises(RuntimeError, match=r"no running event loop"):
         aiohttp.ClientSession()
@@ -1029,3 +1086,12 @@ async def test_open_kv(
     assert isinstance(kv.metadata_cache.authenticator, Authenticator)
     credentials = kv.metadata_cache.authenticator.credentials
     assert credentials.access_token == "argsecret"
+
+
+@asynccontextmanager
+async def all_inner_tasks_awaited() -> AsyncGenerator[None]:
+    pre_existing_tasks = asyncio.all_tasks()
+    yield
+    inner_tasks = asyncio.all_tasks() - pre_existing_tasks
+    if inner_tasks:
+        await asyncio.wait(inner_tasks)

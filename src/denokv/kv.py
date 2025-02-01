@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from base64 import urlsafe_b64decode
 from base64 import urlsafe_b64encode
 from binascii import unhexlify
@@ -518,7 +519,39 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
     async def aclose(self) -> None:
         if self.closed:
             return
-        await self.session.close()
+        await self._aclose(self.session)
+
+    @classmethod
+    async def _aclose(cls, session: aiohttp.ClientSession) -> None:
+        await session.close()
+
+    @classmethod
+    def _finalize(cls, session: aiohttp.ClientSession) -> None | asyncio.Future[None]:
+        if session._loop.is_running():
+            return session._loop.create_task(
+                cls._aclose(session), name="denokv.Kv.create_finalizer"
+            )
+        else:
+            return session._loop.run_until_complete(cls._aclose(session))
+
+    def create_finalizer(self) -> weakref.finalize:
+        """
+        Automatically close the instance when it goes out of scope, or at exit.
+
+        This creates a Finalizer (`weakref.finalize`) that closes the Kv
+        instance automatically when garbage collected, or when Python exits.
+
+        If the event loop of the Kv's session is running, the finalizer returns,
+        an `asyncio.Task` that closes the Kv instance. Otherwise it runs the
+        session's loop to close it and returns None after it's closed.
+
+        Notes
+        -----
+        It's recommended to close Kv instances explicitly using async context
+        manager blocks, but Finalizers can be used in situations where a context
+        manager is not practical, like in an interactive environment.
+        """
+        return weakref.finalize(self, self._finalize, self.session)
 
     def _prepare_key(self, key: AnyKvKeyT) -> AnyKvKeyT:
         if self.flags & KvFlags.IntAsNumber and not isinstance(key, KvKeyEncodable):

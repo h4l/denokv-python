@@ -4,11 +4,13 @@ import asyncio
 from base64 import urlsafe_b64decode
 from base64 import urlsafe_b64encode
 from binascii import unhexlify
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from dataclasses import field
 from enum import Flag
 from enum import auto
 from os import environ
+from types import TracebackType
 from typing import TYPE_CHECKING
 from typing import AsyncIterator
 from typing import Awaitable
@@ -32,6 +34,7 @@ from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.typing import override
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
@@ -466,7 +469,7 @@ DEFAULT_KV_FLAGS: Final = KvFlags.IntAsNumber
 
 
 @dataclass(init=False, **slots_if310())
-class Kv:
+class Kv(AbstractAsyncContextManager["Kv", None]):
     """
     Interface to perform requests against a Deno KV database.
 
@@ -497,6 +500,25 @@ class Kv:
         self.retry_delays = ExponentialBackoff() if retry is None else retry
         self.v8_decoder = v8_decoder or Decoder()
         self.flags = KvFlags.IntAsNumber if flags is None else flags
+
+    @override
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+        /,
+    ) -> None:
+        await self.aclose()
+
+    @property
+    def closed(self) -> bool:
+        return self.session.closed
+
+    async def aclose(self) -> None:
+        if self.closed:
+            return
+        await self.session.close()
 
     def _prepare_key(self, key: AnyKvKeyT) -> AnyKvKeyT:
         if self.flags & KvFlags.IntAsNumber and not isinstance(key, KvKeyEncodable):

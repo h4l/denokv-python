@@ -960,6 +960,28 @@ async def test_Kv_list__retries_retryable_snapshot_read_errors(
     assert len(auth_fn.mock_calls) == 7
 
 
+@pytest_mark_asyncio
+async def test_aclose() -> None:
+    authenticator = Mock()
+    kv = Kv(session=aiohttp.ClientSession(), auth=authenticator)
+    assert not kv.closed
+    assert not kv.session.closed
+
+    await kv.aclose()
+    assert kv.closed
+    assert kv.session.closed
+
+
+@pytest_mark_asyncio
+async def test_close_via_context_manager() -> None:
+    authenticator = Mock()
+    async with Kv(session=aiohttp.ClientSession(), auth=authenticator) as kv:
+        assert not kv.closed
+        assert not kv.session.closed
+    assert kv.closed
+    assert kv.session.closed
+
+
 def test_open_kv__requires_event_loop_to_default_session() -> None:
     with pytest.raises(RuntimeError, match=r"no running event loop"):
         aiohttp.ClientSession()

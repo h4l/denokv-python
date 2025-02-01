@@ -11,12 +11,7 @@
   "postCreateCommand": "pipx install poetry",
   "customizations": {
     "vscode": {
-      "extensions": [
-        "charliermarsh.ruff",
-        "ms-python.python",
-        "ms-python.isort",
-        "ms-python.black-formatter"
-      ]
+      "extensions": ["charliermarsh.ruff", "ms-python.python"]
     }
   }
 }

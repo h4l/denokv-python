@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import weakref
 from contextlib import asynccontextmanager
+from contextlib import contextmanager
 from datetime import datetime
 from datetime import timedelta
 from functools import partial
@@ -66,6 +68,7 @@ from denokv.kv import KvEntry
 from denokv.kv import KvFlags
 from denokv.kv import KvListOptions
 from denokv.kv import KvU64
+from denokv.kv import OpenKvFinalize
 from denokv.kv import VersionStamp
 from denokv.kv import normalize_key
 from denokv.kv import open_kv
@@ -1086,6 +1089,65 @@ async def test_open_kv(
     assert isinstance(kv.metadata_cache.authenticator, Authenticator)
     credentials = kv.metadata_cache.authenticator.credentials
     assert credentials.access_token == "argsecret"
+
+
+@pytest.mark.parametrize(
+    "is_interactive, finalize, is_closed",
+    [
+        (True, None, True),
+        (True, "interactive", True),
+        (True, True, True),
+        (True, False, False),
+        (False, None, False),
+        (False, "interactive", False),
+        (False, True, True),
+        (False, False, False),
+    ],
+)
+@pytest_mark_asyncio
+async def test_open_kv__creates_finalizer_when_running_interactively(
+    is_interactive: bool, finalize: OpenKvFinalize | None, is_closed: bool
+) -> None:
+    async with aiohttp.ClientSession() as session:
+
+        async def open_kv_and_drop_reference() -> None:
+            await open_kv(
+                "https://0.0.0.0/example",
+                finalize=finalize,
+                session=session,
+                access_token="example",
+            )
+
+        async with all_inner_tasks_awaited():
+            if is_interactive:
+                with interactive_session_active():
+                    await open_kv_and_drop_reference()
+            else:
+                await open_kv_and_drop_reference()
+        assert session.closed is is_closed
+
+
+@pytest_mark_asyncio
+async def test_open_kv__validates_finalize() -> None:
+    with pytest.raises(
+        ValueError, match=r"finalize must be True, False, None or 'interactive'"
+    ):
+        await open_kv(
+            "https://0.0.0.0/example",
+            finalize="sdfdsf",  # type: ignore[arg-type]
+            access_token="example",
+        )
+
+
+@contextmanager
+def interactive_session_active() -> Generator[None]:
+    assert not hasattr(sys, "ps1")
+
+    try:
+        sys.ps1 = "example"
+        yield
+    finally:
+        del sys.ps1
 
 
 @asynccontextmanager

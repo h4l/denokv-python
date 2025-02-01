@@ -20,6 +20,7 @@ from typing import ClassVar
 from typing import Final
 from typing import Generic
 from typing import Iterable
+from typing import Literal
 from typing import Protocol
 from typing import Sequence
 from typing import TypedDict
@@ -550,6 +551,8 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
         It's recommended to close Kv instances explicitly using async context
         manager blocks, but Finalizers can be used in situations where a context
         manager is not practical, like in an interactive environment.
+
+        `open_kv()` automatically creates a Finalizer in interactive sessions.
         """
         return weakref.finalize(self, self._finalize, self.session)
 
@@ -998,12 +1001,24 @@ def _common_prefix_length(a: Sequence[object], b: Sequence[object]) -> int:
     return match_length
 
 
+def _is_python_running_in_interactive_environment() -> bool:
+    import sys
+
+    # sys.ps1 is only set in interactive environments:
+    #   https://stackoverflow.com/a/64523765/693728
+    return hasattr(sys, "ps1")
+
+
+OpenKvFinalize: TypeAlias = Literal[True, False, "interactive"]
+
+
 async def open_kv(
     target: URL | str | KvCredentials,
     *,
     access_token: str | None = None,
     session: aiohttp.ClientSession | None = None,
     flags: KvFlags | None = None,
+    finalize: OpenKvFinalize | None = None,
 ) -> Kv:
     """
     Create a connection to a KV database.
@@ -1023,6 +1038,11 @@ async def open_kv(
         Default: A new session is created.
     flags
         Enable/disable flags that change Kv behaviour. Default: [DEFAULT_KV_FLAGS]
+    finalize
+        Whether to create a finalizer to automatically close the Kv instance at
+        exit, or when out of scope. If set to 'interactive', a finalizer is
+        created only if Python is running as an interactive session.
+        Default: ['interactive']
 
     Notes
     -----
@@ -1048,8 +1068,16 @@ async def open_kv(
             )
 
         target = KvCredentials(server_url=target, access_token=access_token)
+    if finalize not in (True, False, "interactive", None):
+        raise ValueError("finalize must be True, False, None or 'interactive'")
+    finalize = "interactive" if finalize is None else finalize
 
     session = session or aiohttp.ClientSession()
     retry = ExponentialBackoff()
     auth = Authenticator(session=session, retry_delays=retry, credentials=target)
-    return Kv(session=session, auth=auth, retry=retry, flags=flags)
+    kv = Kv(session=session, auth=auth, retry=retry, flags=flags)
+    if finalize is True or (
+        finalize == "interactive" and _is_python_running_in_interactive_environment()
+    ):
+        kv.create_finalizer()
+    return kv

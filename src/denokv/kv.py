@@ -11,7 +11,6 @@ from enum import Flag
 from enum import auto
 from functools import partial
 from os import environ
-from types import EllipsisType
 from types import TracebackType
 from typing import Literal
 from typing import overload
@@ -51,6 +50,8 @@ from denokv._kv_writes import SetMutatorMixin
 from denokv._kv_writes import SumMutatorMixin
 from denokv._kv_writes import WriteOperation
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.types import NotSet
+from denokv._pycompat.types import NotSetType
 from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import AsyncIterator
 from denokv._pycompat.typing import Awaitable
@@ -66,6 +67,7 @@ from denokv._pycompat.typing import TypeAlias
 from denokv._pycompat.typing import TypedDict
 from denokv._pycompat.typing import TypeVar
 from denokv._pycompat.typing import TypeVarTuple
+from denokv._pycompat.typing import Union
 from denokv._pycompat.typing import Unpack
 from denokv._pycompat.typing import override
 from denokv.asyncio import loop_time
@@ -834,12 +836,12 @@ class Kv(
         self,
         arg: AtomicWriteRepresentationWriter[WriteResultT]
         | WriteOperation
-        | EllipsisType = ...,  # ... is a sentinel to detect 0 args
+        | NotSetType = NotSet,  # NotSet is a sentinel to detect 0 args
         *args: WriteOperation,
         protobuf_atomic_write: dp_protobuf.AtomicWrite | None = None,
     ) -> CompletedWrite | WriteResultT | KvWriterWriteResult:
         if protobuf_atomic_write is not None:
-            if arg is not ... or len(args) > 0:
+            if arg is not NotSet or len(args) > 0:
                 raise TypeError(
                     "Kv.write() got an unexpected positional argument with "
                     "keyword argument 'protobuf_atomic_write'"
@@ -848,11 +850,11 @@ class Kv(
             return await self._atomic_write(protobuf_atomic_write)
 
         planned_write: PlannedWrite | AtomicWriteRepresentationWriter[WriteResultT]
-        if arg is ...:
-            # arg is ... when 0 args were passed, which is OK (no operations).
-            # But ... when args are provided means it was passed explicitly.
+        if arg is NotSet:
+            # arg is NotSet when 0 args were passed, which is OK (no operations).
+            # But NotSet when args are provided means it was passed explicitly.
             if args:
-                raise TypeError("Kv.write() got an unexpected '...'")
+                raise TypeError("Kv.write() got an unexpected 'NotSet'")
             # Note that it's OK to submit a write with no operations. We get a
             # versionstamp back. Submitting a write with only checks could be
             # used to check if a key has been changed without reading the value.
@@ -896,7 +898,7 @@ _KvSnapshotReadResult: TypeAlias = Result[
     tuple[SnapshotReadOutput, EndpointInfo], DataPathError
 ]
 _KvAtomicWriteResult: TypeAlias = Result[
-    tuple[VersionStamp, EndpointInfo], CheckFailure | DataPathError
+    tuple[VersionStamp, EndpointInfo], Union[CheckFailure, DataPathError]
 ]
 
 

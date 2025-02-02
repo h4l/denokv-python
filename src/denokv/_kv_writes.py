@@ -69,14 +69,15 @@ from denokv.result import AnySuccess
 from denokv.result import is_err
 
 KvNumberNameT = TypeVar("KvNumberNameT", bound=str, default=str)
-NumberT = TypeVar("NumberT", bound=int | float, default=int | float)
+NumberT = TypeVar("NumberT", bound=Union[int, float], default=Union[int, float])
 KvNumberTypeT = TypeVar("KvNumberTypeT", default=object)
 
 KvNumberNameT_co = TypeVar("KvNumberNameT_co", bound=str, covariant=True, default=str)
 NumberT_co = TypeVar(
-    "NumberT_co", bound=int | float, covariant=True, default=int | float
+    "NumberT_co", bound=Union[int, float], covariant=True, default=Union[int, float]
 )
 KvNumberTypeT_co = TypeVar("KvNumberTypeT_co", covariant=True, default=object)
+
 U = TypeVar("U")
 MutateResultT = TypeVar("MutateResultT")
 EnqueueResultT = TypeVar("EnqueueResultT")
@@ -721,15 +722,16 @@ KvNumber._value2member_map_[float] = KvNumber.float
 KvNumber._value2member_map_[int] = KvNumber.float
 KvNumber._value2member_map_[KvU64] = KvNumber.u64
 
-BigIntKvNumberIdentifier = Literal["bigint", KvNumber.bigint] | type[JSBigInt]
-FloatKvNumberIdentifier = Literal["float", KvNumber.float] | type[float]
-U64KvNumberIdentifier = Literal["u64", KvNumber.u64] | type[KvU64]
-KvNumberIdentifier = (
-    BigIntKvNumberIdentifier
-    | FloatKvNumberIdentifier
-    | U64KvNumberIdentifier
-    | KvNumber
-)
+BigIntKvNumberIdentifier: TypeAlias = Union[
+    Literal["bigint", KvNumber.bigint], type[JSBigInt]
+]
+FloatKvNumberIdentifier: TypeAlias = Union[
+    Literal["float", KvNumber.float], type[float]
+]
+U64KvNumberIdentifier: TypeAlias = Union[Literal["u64", KvNumber.u64], type[KvU64]]
+KvNumberIdentifier: TypeAlias = Union[
+    BigIntKvNumberIdentifier, FloatKvNumberIdentifier, U64KvNumberIdentifier, KvNumber
+]
 
 
 def encode_v8_number(number: float, /) -> bytes:
@@ -957,7 +959,7 @@ class SumMutatorMixin(MutatorMixin[MutateResultT]):
         | None = None,
         **options: Unpack[SumOptions[NumberT]],
     ) -> MutateResultT:
-        delta = cast(NumberT | KvNumberTypeT, delta)
+        delta = cast(Union[NumberT, KvNumberTypeT], delta)
         number_type = cast(
             KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
         )
@@ -1055,7 +1057,7 @@ class MinMutatorMixin(MutatorMixin[MutateResultT]):
         | None = None,
         **options: Unpack[MutationOptions],
     ) -> MutateResultT:
-        value = cast(NumberT | KvNumberTypeT, value)
+        value = cast(Union[NumberT, KvNumberTypeT], value)
         number_type = cast(
             KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
         )
@@ -1153,7 +1155,7 @@ class MaxMutatorMixin(MutatorMixin[MutateResultT]):
         | None = None,
         **options: Unpack[MutationOptions],
     ) -> MutateResultT:
-        value = cast(NumberT | KvNumberTypeT, value)
+        value = cast(Union[NumberT, KvNumberTypeT], value)
         number_type = cast(
             KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
         )
@@ -1229,7 +1231,7 @@ class EnqueueMixin(Generic[EnqueueResultT]):
         return self._enqueue(enqueue)
 
 
-@dataclass
+@dataclass(init=False)
 class PlannedWrite(
     CheckMixin["PlannedWrite"],
     SetMutatorMixin["PlannedWrite"],
@@ -1240,11 +1242,26 @@ class PlannedWrite(
     EnqueueMixin["PlannedWrite"],
     AtomicWriteRepresentationWriter["CompletedWrite"],
 ):
-    kv: KvWriter | None = field(default=None)
-    checks: MutableSequence[CheckRepresentation] = field(default_factory=list)
-    mutations: MutableSequence[MutationRepresentation] = field(default_factory=list)
-    enqueues: MutableSequence[EnqueueRepresentation] = field(default_factory=list)
-    v8_encoder: Encoder | None = field(default=None, kw_only=True)
+    kv: KvWriter | None
+    checks: MutableSequence[CheckRepresentation]
+    mutations: MutableSequence[MutationRepresentation]
+    enqueues: MutableSequence[EnqueueRepresentation]
+    v8_encoder: Encoder | None
+
+    def __init__(
+        self,
+        kv: KvWriter | None = None,
+        checks: MutableSequence[CheckRepresentation] | None = None,
+        mutations: MutableSequence[MutationRepresentation] | None = None,
+        enqueues: MutableSequence[EnqueueRepresentation] | None = None,
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> None:
+        self.kv = kv
+        self.checks = list(checks or ())
+        self.mutations = list(mutations or ())
+        self.enqueues = list(enqueues or ())
+        self.v8_encoder = v8_encoder
 
     @override
     async def write(
@@ -1745,10 +1762,10 @@ class NumberMutation(Mutation, Generic[KvNumberNameT_co, NumberT_co, KvNumberTyp
             number_identifier: KvNumberIdentifier = number_type
             resolved_number_type = KvNumber.resolve(number_identifier).value  # pyright: ignore[reportAssignmentType]
         else:
-            known_number = cast(KvU64 | JSBigInt | float, value)
+            known_number = cast(Union[KvU64, JSBigInt, float], value)
             resolved_number_type = KvNumber.resolve(number=known_number).value  # pyright: ignore[reportAssignmentType]
 
-        resolved_value = cast(KvNumberTypeT | NumberT, value)
+        resolved_value = cast(Union[KvNumberTypeT, NumberT], value)
 
         return (
             resolved_number_type.as_py_number(resolved_value),

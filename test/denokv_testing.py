@@ -60,6 +60,7 @@ from denokv._pycompat.typing import NamedTuple
 from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import TypeIs
 from denokv._pycompat.typing import TypeVar
+from denokv._pycompat.typing import Union
 from denokv._pycompat.typing import cast
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
@@ -595,7 +596,7 @@ def decode_v8_number(data: bytes) -> tuple[KvNumber, int | float]:
     if type(value) is JSBigInt:
         return KvNumber.bigint, value
     if type(value) in (int, float):
-        return KvNumber.float, cast(int | float, value)
+        return KvNumber.float, cast(Union[int, float], value)
     raise ValueError("V8-serialized value is not a BigInt or Number")
 
 

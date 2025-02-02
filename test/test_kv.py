@@ -56,6 +56,7 @@ from denokv._pycompat.typing import Callable
 from denokv._pycompat.typing import Generator
 from denokv._pycompat.typing import Mapping
 from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import Union
 from denokv._pycompat.typing import cast
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
@@ -979,7 +980,7 @@ async def test_Kv_write__set_versioned(kv: Kv) -> None:
     assert entry and entry.value == "Hi"
 
 
-ErrorPredicate: TypeAlias = Callable[[BaseException | None], bool]
+ErrorPredicate: TypeAlias = Callable[[Union[BaseException, None]], bool]
 
 
 def match_client_error(server_msg_content: str) -> ErrorPredicate:

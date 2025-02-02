@@ -66,7 +66,6 @@ from denokv.datapath import DataPathError
 from denokv.datapath import KvKeyTuple
 from denokv.datapath import RequestUnsuccessful
 from denokv.datapath import ResponseUnsuccessful
-from denokv.datapath import SnapshotReadResult
 from denokv.datapath import increment_packed_key
 from denokv.datapath import pack_key
 from denokv.errors import DenoKvError
@@ -348,8 +347,13 @@ def datapath_endpoint_url(
 
 
 @pytest.fixture
-def meta(datapath_endpoint_url: URL) -> DatabaseMetadata:
-    return mk_db_meta([EndpointInfo(datapath_endpoint_url, ConsistencyLevel.STRONG)])
+def meta(
+    datapath_version: Literal[1, 2, 3], datapath_endpoint_url: URL
+) -> DatabaseMetadata:
+    return make_database_metadata(
+        [EndpointInfo(datapath_endpoint_url, ConsistencyLevel.STRONG)],
+        version=datapath_version,
+    )
 
 
 @pytest.fixture
@@ -693,33 +697,6 @@ def list_example_entries() -> Mapping[KvKeyTuple, object]:
     }
 
 
-@pytest.fixture
-def mock_snapshot_read_to_return_mock_db_results(
-    mock_snapshot_read: AsyncMock, mock_db: MockKvDb
-) -> Callable[[], AsyncMock]:
-    async def snapshot_read_effect(
-        *,
-        session: aiohttp.ClientSession,
-        meta: DatabaseMetadata,
-        endpoint: EndpointInfo,
-        read: SnapshotRead,
-    ) -> SnapshotReadResult:
-        assert len(read.ranges) == 1
-        snapshot_read_output = SnapshotReadOutput(
-            ranges=[mock_db.snapshot_read_range(read.ranges[0])],
-            read_disabled=False,
-            read_is_strongly_consistent=True,
-            status=SnapshotReadStatus.SR_SUCCESS,
-        )
-        return Ok(snapshot_read_output)
-
-    def apply() -> AsyncMock:
-        mock_snapshot_read.side_effect = snapshot_read_effect
-        return mock_snapshot_read
-
-    return apply
-
-
 list_example_keys = st.one_of(
     st.none(),
     st.just(()),
@@ -773,7 +750,6 @@ def list_example_cursors(
 async def test_Kv_list__generates_values_from_sequential_snapshot_reads(
     data: st.DataObject,
     kv: Kv,
-    mock_snapshot_read_to_return_mock_db_results: Callable[[], AsyncMock],
     mock_db: MockKvDb,
     list_example_entries: Mapping[KvKeyTuple, object],
     prefix: KvKeyTuple | None,
@@ -786,7 +762,6 @@ async def test_Kv_list__generates_values_from_sequential_snapshot_reads(
 ) -> None:
     mock_db.clear()
     add_entries(mock_db, list_example_entries)
-    mock_snapshot_read_to_return_mock_db_results()
 
     # Kv.list() should be equivalent to reading the listed range in one go.
     listed_range = datapath.read_range_multi(
@@ -863,9 +838,6 @@ async def test_Kv_list__retries_retryable_snapshot_read_errors(
     create_kv: partial[Kv],
     meta: DatabaseMetadata,
     mock_snapshot_read: AsyncMock,
-    # mock_snapshot_read_to_return_mock_db_results: Callable[[], AsyncMock],
-    # mock_db: MockKvDb,
-    # list_example_entries: Mapping[KvKeyTuple, object],
 ) -> None:
     auth_fn = AsyncMock(name="auth_fn", return_value=Ok(meta))
     db = create_kv(retry=repeat(0), auth=auth_fn)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import math
 import re
 import sys
@@ -81,6 +82,33 @@ T = TypeVar("T")
 E = TypeVar("E")
 E2 = TypeVar("E2")
 MessageT = TypeVar("MessageT", bound=Message)
+
+
+def diff_protobuf_messages(
+    left: Message,
+    right: Message,
+    *,
+    left_name: str | None = None,
+    right_name: str | None = None,
+    context_line_count: int = 3,
+    lineterm: str = "\n",
+) -> Sequence[str]:
+    if left_name is None:
+        left_name = f"left: {left.DESCRIPTOR.full_name}"
+    if right_name is None:
+        right_name = f"right: {right.DESCRIPTOR.full_name}"
+    left_lines = str(left).splitlines(keepends=False)
+    right_lines = str(right).splitlines(keepends=False)
+    return [
+        *difflib.unified_diff(
+            left_lines,
+            right_lines,
+            fromfile=left_name,
+            tofile=right_name,
+            n=context_line_count,
+            lineterm=lineterm,
+        )
+    ]
 
 
 def decode_js_number_as_float(

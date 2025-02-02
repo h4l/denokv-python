@@ -123,4 +123,5 @@ omit = [
 exclude_also = [
   "if TYPE_CHECKING:",
   "^\\s*def .+: [.]{3}$", # def foo(): ... (... instead of pass)
+  "^\\s*assert_never\\(.*\\)$", # unreachable assertion, expected to not execute
 ]

@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from typing import Literal
-from typing import TypedDict
+from typing import TypedDict  # avoid circular reference with _pycompat.typing
 
 
 class NoArg(TypedDict):
@@ -25,6 +25,21 @@ else:
 
     def slots_if310() -> SlotsTrue:
         return SlotsTrue(slots=True)
+
+
+class KwOnly(TypedDict):
+    kw_only: Literal[True]
+
+
+if sys.version_info < (3, 10):
+
+    def kw_only_if310() -> NoArg:
+        return NoArg()
+
+else:
+
+    def kw_only_if310() -> KwOnly:
+        return KwOnly(kw_only=True)
 
 
 @dataclass

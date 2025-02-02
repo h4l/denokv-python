@@ -105,6 +105,13 @@ convention = "numpy"
 [tool.pytest.ini_options]
 addopts = ["--doctest-modules"]
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+  # Treat warnings emitted during tests as errors. (This way we can explicitly
+  # ignore warnings we know to be OK.)
+  "error",
+  # Triggered by the fairly old version of protobuf we use
+  'ignore:_SixMetaPathImporter\.find_spec\(\)\ not\ found;\ falling\ back\ to\ find_module\(\):ImportWarning:importlib._bootstrap'
+]
 
 [tool.coverage.run]
 omit = [

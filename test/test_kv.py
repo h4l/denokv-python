@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import weakref
 from contextlib import asynccontextmanager
@@ -24,6 +25,7 @@ from hypothesis import given
 from hypothesis import settings
 from hypothesis import strategies as st
 from v8serialize import Decoder
+from v8serialize.jstypes import JSMap
 from yarl import URL
 
 from denokv import datapath
@@ -34,7 +36,11 @@ from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._datapath_pb2 import SnapshotReadStatus
 from denokv._datapath_pb2 import ValueEncoding
 from denokv._kv_values import KvEntry
+from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
+from denokv._kv_writes import DEFAULT_ENQUEUE_RETRY_DELAY_COUNT
+from denokv._kv_writes import Limit
+from denokv._kv_writes import LimitExceededPolicy
 from denokv._pycompat.enum import StrEnum
 from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import AsyncGenerator
@@ -76,6 +82,8 @@ from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
+from denokv.result import is_err
+from denokv.result import is_ok
 from test.advance_time import advance_time
 from test.denokv_testing import ExampleCursorFormat
 from test.denokv_testing import MockKvDb
@@ -937,6 +945,264 @@ async def test_Kv_list__retries_retryable_snapshot_read_errors(
         (KvKey("a", x), f"x{x}".encode(), VersionStamp(1)) for x in range(1, 5)
     ]
     assert len(auth_fn.mock_calls) == 7
+
+
+@pytest_mark_asyncio
+async def test_Kv_write__set(kv: Kv) -> None:
+    _, before = await kv.get(("foo", 1))
+    result = await kv.atomic().set(("foo", 1), "Hi").write()
+    _, after = await kv.get(("foo", 1))
+
+    assert before is None
+    assert is_ok(result)
+    assert after and after.value == "Hi"
+
+
+@pytest_mark_asyncio
+async def test_Kv_write__set_versioned(kv: Kv) -> None:
+    result = await kv.atomic().set(("foo", 1), "Hi", versioned=True).write()
+    assert is_ok(result)
+    _, entry = await kv.get(("foo", 1, str(result.versionstamp)))
+    assert entry and entry.value == "Hi"
+
+
+ErrorPredicate: TypeAlias = Callable[[Exception], bool]
+
+
+def match_client_error(server_msg_content: str) -> Callable[[Exception], bool]:
+    def is_client_error(e: Exception) -> bool:
+        return (
+            isinstance(e, ResponseUnsuccessful)
+            and e.status == 400
+            and server_msg_content in e.body_text
+        )
+
+    return is_client_error
+
+
+def match_error(
+    kind: type[BaseException],
+    containing: str | None = None,
+    matching: str | re.Pattern[str] | None = None,
+) -> ErrorPredicate:
+    if containing is not None:
+        if matching is not None:
+            raise ValueError("containing and matching args cannot both be set")
+        matching = re.escape(containing)
+    elif matching is None:
+        raise ValueError("containing or matching args must be set")
+
+    def is_error(e: Exception) -> bool:
+        return isinstance(e, kind) and bool(re.search(matching, str(e)))
+
+    return is_error
+
+
+@asynccontextmanager
+async def validate_write_outcome(
+    kv: Kv,
+    initial_val: object | None,
+    result: object | None | ErrorPredicate,
+) -> AsyncGenerator[tuple[Kv, KvKeyTuple]]:
+    match_error: ErrorPredicate | None = result if callable(result) else None
+
+    if initial_val is not None:
+        assert is_ok(await kv.atomic().set(("foo", 0), initial_val).write())
+    try:
+        yield (kv, ("foo", 0))
+        assert not match_error, "write succeeded but is expected to fail"
+    except AssertionError:
+        raise
+    except Exception as e:
+        if not match_error:
+            raise
+        assert match_error(e), f"Did not match error: {e!r}"
+        return
+
+    (_, a) = await kv.get(("foo", 0))
+    if result is None:
+        assert a is None
+    else:
+        assert a and a.value == result and type(a.value) is type(result)
+
+
+# fmt: off
+_params_test_Kv_write__sum = pytest.mark.parametrize(
+    "initial_val, sum_val, sum_kwargs, result",
+    [
+        (12, 3, {}, 15),
+        (12, -3, {}, 9),
+        (None, 3, {}, 3),
+        (12.5, 2.5, {}, 15.0),
+        (12.5, -2.5, {}, 10.0),
+        (None, 2.5, {}, 2.5),
+        (None, -2.5, {}, -2.5),
+        (KvU64(12), KvU64(3), {}, KvU64(15)),
+        (KvU64(12), 3, {}, KvU64(15)),
+        (KvU64(12), -3, {}, KvU64(9)),
+        (None, KvU64(3), {}, KvU64(3)),
+        # KvU64 wraps on overflow
+        (KvU64(1), -3, {}, KvU64(2**64 - 2)),
+        (KvU64(2**64 - 2), 3, {}, KvU64(1)),
+        # Limits
+        (12, 10, dict(limit_min=10, limit_max=20, limit_exceeded="clamp"), 20),
+        (12, -10, dict(limit_min=10, limit_max=20, limit_exceeded="clamp"), 10),
+        (12.0, 10.0, dict(limit_min=10.0, limit_max=20.0, limit_exceeded="clamp"), 20.0),  # noqa: E501
+        (12.0, -10.0, dict(limit_min=10.0, limit_max=20.0, limit_exceeded="clamp"), 10.0), # noqa: E501
+        # limit via Limit object
+        (12, -10, dict(limit=Limit(10, 20, 'clamp')), 10),
+        # kwargs override the limit object fields
+        (12, 10, dict(limit=Limit(9, 21, 'error'), limit_min=10, limit_max=20, limit_exceeded='clamp'), 20),   # noqa: E501
+        (12, -10, dict(limit=Limit(9, 21, 'error'), limit_min=10, limit_max=20, limit_exceeded='clamp'), 10),  # noqa: E501
+        # overflow with limit_exceeded error causes write to fail with client error
+        pytest.param(12,   10,    dict(limit_min=10,   limit_max=20,   limit_exceeded="error"), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-high-BigInt'),  # noqa: E501
+        pytest.param(12,   -10,   dict(limit_min=10,   limit_max=20,   limit_exceeded="error"), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-low-BigInt'),   # noqa: E501
+        pytest.param(12.0, 10.0,  dict(limit_min=10.0, limit_max=20.0, limit_exceeded="error"), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-high-Number'),  # noqa: E501
+        pytest.param(12.0, -10.0, dict(limit_min=10.0, limit_max=20.0, limit_exceeded="error"), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-low-Number'),   # noqa: E501
+        # Cannot use limit_exceeded other than wrap for KvU64
+        pytest.param(KvU64(12), KvU64(1), dict(limit_exceeded="error"), lambda e: isinstance(e, ValueError) and "limit for KvU64 cannot be changed, it must be None or LIMIT_KVU64" == str(e), id='err-invalid-exceeded-KvU64'),  # noqa: E501
+        # Cannot use limit_exceeded wrap for BigInt/Number
+        pytest.param(1,   1,   dict(limit_exceeded=LimitExceededPolicy.WRAP), match_error(ValueError, "limit for JavaScript BigInt or Number cannot be WRAP, it must be ERROR or CLAMP"), id='err-invalid-exceeded-BigInt'),  # noqa: E501
+        pytest.param(1.0, 1.0, dict(limit_exceeded=LimitExceededPolicy.WRAP), match_error(ValueError, "limit for JavaScript BigInt or Number cannot be WRAP, it must be ERROR or CLAMP"), id='err-invalid-exceeded-Number'),  # noqa: E501
+    ],
+)
+# fmt: on
+@_params_test_Kv_write__sum
+@pytest_mark_asyncio
+async def test_Kv_write__sum(
+    kv: Kv,
+    initial_val: int | float | KvU64 | None,
+    sum_val: int | float | KvU64,
+    sum_kwargs: dict[str, Any],
+    result: int | float | KvU64 | Callable[[Exception], bool],
+) -> None:
+    async with validate_write_outcome(kv, initial_val, result) as (kv, key):
+        assert is_ok(await kv.atomic().sum(key, sum_val, **sum_kwargs).write())
+
+
+@pytest.mark.parametrize(
+    "initial_val, max_val, max_kwargs, result",
+    [
+        (KvU64(12), KvU64(3), {}, KvU64(12)),
+        (KvU64(3), KvU64(12), {}, KvU64(12)),
+        # Cannot use max() on non KvU64 stored value
+        (3, KvU64(12), {}, match_client_error("SnapshotWrite is not valid")),
+        (
+            KvU64(1),
+            2.0,
+            {},
+            match_error(TypeError, "value must be 8 bytes or a 64-bit unsigned int"),
+        ),
+    ],
+)
+@pytest_mark_asyncio
+async def test_Kv_write__max(
+    kv: Kv,
+    initial_val: int | float | KvU64 | None,
+    max_val: KvU64,
+    max_kwargs: dict[str, Any],
+    result: int | float | KvU64 | Callable[[Exception], bool],
+) -> None:
+    async with validate_write_outcome(kv, initial_val, result):
+        assert is_ok(await kv.atomic().max(("foo", 0), max_val, **max_kwargs).write())
+
+
+@pytest.mark.parametrize(
+    "initial_val, min_val, min_kwargs, result",
+    [
+        (KvU64(12), KvU64(3), {}, KvU64(3)),
+        (KvU64(3), KvU64(12), {}, KvU64(3)),
+        # Cannot use min() on non KvU64 stored value
+        (3, KvU64(12), {}, match_client_error("SnapshotWrite is not valid")),
+        (
+            KvU64(1),
+            2.0,
+            {},
+            match_error(TypeError, "value must be 8 bytes or a 64-bit unsigned int"),
+        ),
+    ],
+)
+@pytest_mark_asyncio
+async def test_Kv_write__min(
+    kv: Kv,
+    initial_val: int | float | KvU64 | None,
+    min_val: KvU64,
+    min_kwargs: dict[str, Any],
+    result: int | float | KvU64 | Callable[[Exception], bool],
+) -> None:
+    async with validate_write_outcome(kv, initial_val, result):
+        assert is_ok(await kv.atomic().min(("foo", 0), min_val, **min_kwargs).write())
+
+
+@pytest.mark.parametrize("initial_val", [None, 42])
+@pytest_mark_asyncio
+async def test_Kv_write__delete(
+    kv: Kv, initial_val: int | float | KvU64 | None
+) -> None:
+    async with validate_write_outcome(kv, initial_val, result=None):
+        assert is_ok(await kv.atomic().delete(("foo", 0)).write())
+
+
+@pytest_mark_asyncio
+async def test_Kv_write__check__allows_write_when_matching(kv: Kv) -> None:
+    async with validate_write_outcome(kv, None, result=42) as (kv, key):
+        assert is_ok(await kv.atomic().check(key, None).set(key, 42).write())
+
+    async with validate_write_outcome(kv, 41, result=42) as (kv, key):
+        _, initial = await kv.get(key)
+        assert initial
+        assert is_ok(
+            await kv.atomic().check(key, initial.versionstamp).set(key, 42).write()
+        )
+
+
+@pytest_mark_asyncio
+async def test_Kv_write__check__fails_write_when_mismatching(kv: Kv) -> None:
+    async with validate_write_outcome(kv, None, result=None) as (kv, key):
+        result = await kv.atomic().check(key, VersionStamp(1)).set(key, 42).write()
+        assert is_err(result)
+        assert result.conflicts[key].versionstamp == VersionStamp(1)
+
+    async with validate_write_outcome(kv, 41, result=42) as (kv, key):
+        _, initial = await kv.get(key)
+        assert initial
+        assert is_ok(
+            await kv.atomic().check(key, initial.versionstamp).set(key, 42).write()
+        )
+        # Try to change from original version
+        result = await kv.atomic().check(key, initial.versionstamp).set(key, 80).write()
+        assert is_err(result)
+        assert result.conflicts[key].versionstamp == initial.versionstamp
+
+
+@pytest_mark_asyncio
+async def test_Kv_write__enqueue(kv: Kv, mock_db: MockKvDb) -> None:
+    assert len(mock_db.queued_messages) == 0
+
+    t = datetime.now() + timedelta(seconds=60)
+    await (
+        kv.atomic()
+        .enqueue(
+            {"foo": "bar"},
+            delivery_time=t,
+            retry_delays=[1, 2],
+            dead_letter_keys=[("foo", 1), ("bar", 2)],
+        )
+        .enqueue({"baz": "boz"})
+        .write()
+    )
+
+    assert len(mock_db.queued_messages) == 2
+    a, b = mock_db.queued_messages
+    assert a.payload == JSMap(foo="bar")
+    assert a.deadline_ms == pytest.approx(t.timestamp() * 1000, rel=1)
+    assert a.backoff_schedule == [1000, 2000]  # milliseconds
+    assert a.keys_if_undelivered == [KvKey("foo", 1), KvKey("bar", 2)]
+
+    assert b.payload == JSMap(baz="boz")
+    assert b.deadline_ms == 0
+    assert len(b.backoff_schedule) == DEFAULT_ENQUEUE_RETRY_DELAY_COUNT
+    assert b.keys_if_undelivered == []
 
 
 @pytest_mark_asyncio

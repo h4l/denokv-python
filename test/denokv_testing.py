@@ -32,6 +32,7 @@ from denokv._datapath_pb2 import ValueEncoding
 from denokv._kv_values import KvEntry
 from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
+from denokv._kv_writes import LimitExceededPolicy
 from denokv._pycompat.dataclasses import slots_if310
 from denokv._pycompat.protobuf import enum_name
 from denokv._pycompat.typing import Any
@@ -52,7 +53,6 @@ from denokv.datapath import pack_key
 from denokv.datapath import parse_protobuf_kv_entry
 from denokv.errors import InvalidCursor
 from denokv.kv import AnyCursorFormat
-from denokv.kv import LimitExceededPolicy
 from denokv.kv import ListContext
 from denokv.kv import create_default_v8_encoder
 from denokv.kv_keys import KvKey

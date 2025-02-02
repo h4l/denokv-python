@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from enum import Flag
 from enum import auto
+from functools import partial
 from os import environ
 from types import TracebackType
 from typing import Literal
@@ -18,19 +19,31 @@ import aiohttp
 import v8serialize
 from fdb.tuple import unpack
 from v8serialize import Decoder
+from v8serialize import Encoder
 from yarl import URL
 
+from denokv import _datapath_pb2 as dp_protobuf
 from denokv import datapath
-from denokv._datapath_pb2 import ReadRange
+from denokv._datapath_pb2 import AtomicWrite
 from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._kv_values import KvEntry
 from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
+from denokv._kv_writes import Check
+from denokv._kv_writes import CommittedWrite
+from denokv._kv_writes import CompletedWrite
+from denokv._kv_writes import ConflictedWrite
+from denokv._kv_writes import Enqueue
+from denokv._kv_writes import Mutation
+from denokv._kv_writes import PlannedWrite
+from denokv._kv_writes import WriteOperation
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import AsyncIterator
 from denokv._pycompat.typing import Awaitable
 from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Coroutine
 from denokv._pycompat.typing import Final
 from denokv._pycompat.typing import Generic
 from denokv._pycompat.typing import Iterable
@@ -55,12 +68,13 @@ from denokv.backoff import attempts
 from denokv.datapath import AnyKvKey
 from denokv.datapath import AnyKvKeyT
 from denokv.datapath import AutoRetry
+from denokv.datapath import CheckFailure
+from denokv.datapath import DataPathDenoKvError
 from denokv.datapath import DataPathError
 from denokv.datapath import KvKeyEncodable
 from denokv.datapath import KvKeyPiece
 from denokv.datapath import KvKeyTuple
 from denokv.datapath import ProtocolViolation
-from denokv.datapath import SnapshotReadResult
 from denokv.datapath import is_kv_key_tuple
 from denokv.datapath import pack_key
 from denokv.datapath import parse_protobuf_kv_entry
@@ -76,6 +90,7 @@ T = TypeVar("T", default=object)
 # Note that the default arg doesn't seem to work with MyPy yet. The
 # DefaultKvKey alias is what this should behave as when defaulted.
 Pieces = TypeVarTuple("Pieces", default=Unpack[tuple[KvKeyPiece, ...]])
+_DataPathErrorT = TypeVar("_DataPathErrorT", bound=DataPathDenoKvError)
 
 SAFE_FLOAT_INT_RANGE: Final = range(-(2**53 - 1), 2**53)  # 2**53 - 1 is max safe
 
@@ -387,6 +402,7 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
     session: aiohttp.ClientSession
     retry_delays: Backoff
     metadata_cache: DatabaseMetadataCache
+    v8_encoder: Encoder
     v8_decoder: Decoder
     flags: KvFlags
 
@@ -395,12 +411,14 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
         session: aiohttp.ClientSession,
         auth: AuthenticatorFn,
         retry: Backoff | None = None,
+        v8_encoder: Encoder | None = None,
         v8_decoder: Decoder | None = None,
         flags: KvFlags | None = None,
     ) -> None:
         self.session = session
         self.metadata_cache = DatabaseMetadataCache(authenticator=auth)
         self.retry_delays = ExponentialBackoff() if retry is None else retry
+        self.v8_encoder = v8_encoder or create_default_v8_encoder()
         self.v8_decoder = v8_decoder or Decoder()
         self.flags = KvFlags.IntAsNumber if flags is None else flags
 
@@ -514,7 +532,7 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
         args = tuple(self._prepare_key(key) for key in args)
         ranges = [read_range_single(key) for key in args]
         snapshot_read_result = await self._snapshot_read(
-            ranges, consistency=consistency
+            dp_protobuf.SnapshotRead(ranges=ranges), consistency=consistency
         )
         if isinstance(snapshot_read_result, Err):
             raise snapshot_read_result.error
@@ -664,7 +682,7 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
                     )
 
             snapshot_read_result = await self._snapshot_read(
-                ranges=[read_range], consistency=consistency
+                dp_protobuf.SnapshotRead(ranges=[read_range]), consistency=consistency
             )
             if isinstance(snapshot_read_result, Err):
                 raise snapshot_read_result.error
@@ -716,10 +734,25 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
             batch_start = parsed_key
 
     async def _snapshot_read(
-        self, ranges: Sequence[ReadRange], *, consistency: ConsistencyLevel
+        self, read: SnapshotRead, *, consistency: ConsistencyLevel
     ) -> _KvSnapshotReadResult:
-        read = SnapshotRead(ranges=ranges)
-        result: SnapshotReadResult
+        return await self._datapath_request(
+            partial(datapath.snapshot_read, read=read), consistency=consistency
+        )
+
+    async def _atomic_write(self, write: AtomicWrite) -> _KvAtomicWriteResult:
+        return await self._datapath_request(
+            partial(datapath.atomic_write, write=write),
+            consistency=ConsistencyLevel.STRONG,
+        )
+
+    async def _datapath_request(
+        self,
+        datapath_request: partial[Coroutine[Any, Any, Result[T, _DataPathErrorT]]],
+        *,
+        consistency: ConsistencyLevel,
+    ) -> Result[tuple[T, EndpointInfo], _DataPathErrorT]:
+        result: Result[T, _DataPathErrorT]
         endpoint: EndpointInfo
         for delay in attempts(self.retry_delays):
             # return error from this?
@@ -738,11 +771,8 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
             endpoints = EndpointSelector(meta=cached_meta.value)
             endpoint = endpoints.get_endpoint(consistency)
 
-            result = await datapath.snapshot_read(
-                session=self.session,
-                meta=cached_meta.value,
-                endpoint=endpoint,
-                read=read,
+            result = await datapath_request(
+                session=self.session, meta=cached_meta.value, endpoint=endpoint
             )
             if isinstance(result, Err):
                 if result.error.auto_retry is AutoRetry.AFTER_BACKOFF:
@@ -760,9 +790,76 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
         assert isinstance(result, Ok)
         return Ok((result.value, endpoint))
 
+    def atomic(self, *operations: WriteOperation) -> PlannedWrite:
+        write = PlannedWrite(kv=self)
+        for op in operations:
+            if isinstance(op, Check):
+                write.check(op)
+            elif isinstance(op, Mutation):
+                write.mutate(op)
+            else:
+                assert isinstance(op, Enqueue)
+                write.enqueue(op)
+        return write
+
+    @overload
+    async def write(self, *operations: WriteOperation) -> CompletedWrite: ...
+
+    @overload
+    async def write(self, planned_write: PlannedWrite, /) -> CompletedWrite: ...
+
+    async def write(
+        self, arg: PlannedWrite | WriteOperation | None = None, *args: WriteOperation
+    ) -> CompletedWrite:
+        if arg is None:
+            if args:
+                raise TypeError("arguments cannot be None")
+            # One None arg means 0 args were passed
+            planned_write = PlannedWrite()
+        elif isinstance(arg, PlannedWrite):
+            planned_write = arg
+            if args:
+                raise TypeError("unexpected arguments after PlannedWrite")
+        else:
+            planned_write = self.atomic(arg, *args)
+
+        # Note that it's OK to submit a write with no operations. We get a
+        # versionstamp back. Submitting a write with only checks could be used
+        # to check if a key has been changed without reading the value.
+        result = await self._atomic_write(
+            planned_write.as_protobuf(v8_encoder=self.v8_encoder)
+        )
+
+        concrete_checks = [
+            Check(key=key_ver.key, versionstamp=key_ver.versionstamp)
+            for key_ver in planned_write.checks
+        ]
+
+        if isinstance(result, Err):
+            if isinstance(result.error, CheckFailure):
+                check_failure = result.error
+                return ConflictedWrite(
+                    failed_checks=list(check_failure.failed_check_indexes),
+                    checks=concrete_checks,
+                    mutations=planned_write.mutations,
+                    enqueues=planned_write.enqueues,
+                )
+            raise result.error
+
+        raw_versionstamp, endpoint = result.value
+        return CommittedWrite(
+            versionstamp=VersionStamp(raw_versionstamp),
+            checks=concrete_checks,
+            mutations=planned_write.mutations,
+            enqueues=planned_write.enqueues,
+        )
+
 
 _KvSnapshotReadResult: TypeAlias = Result[
     tuple[SnapshotReadOutput, EndpointInfo], DataPathError
+]
+_KvAtomicWriteResult: TypeAlias = Result[
+    tuple[bytes, EndpointInfo], CheckFailure | DataPathError
 ]
 
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from denokv._kv_values import KvEntry as KvEntry
+from denokv._kv_values import KvU64 as KvU64
+from denokv._kv_values import VersionStamp as VersionStamp
 from denokv.auth import ConsistencyLevel as ConsistencyLevel
 from denokv.auth import MetadataExchangeDenoKvError as MetadataExchangeDenoKvError
 from denokv.datapath import AnyKvKey as AnyKvKey
@@ -13,10 +16,7 @@ from denokv.errors import InvalidCursor as InvalidCursor
 from denokv.kv import CursorFormatType as CursorFormatType
 from denokv.kv import Kv as Kv
 from denokv.kv import KvCredentials as KvCredentials
-from denokv.kv import KvEntry as KvEntry
 from denokv.kv import KvListOptions as KvListOptions
-from denokv.kv import KvU64 as KvU64
 from denokv.kv import ListKvEntry as ListKvEntry
-from denokv.kv import VersionStamp as VersionStamp
 from denokv.kv import open_kv as open_kv
 from denokv.kv_keys import KvKey as KvKey

@@ -33,6 +33,8 @@ from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._datapath_pb2 import SnapshotReadStatus
 from denokv._datapath_pb2 import ValueEncoding
+from denokv._kv_values import KvEntry
+from denokv._kv_values import VersionStamp
 from denokv._pycompat.enum import StrEnum
 from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import AsyncGenerator
@@ -65,12 +67,9 @@ from denokv.kv import CachedValue
 from denokv.kv import DatabaseMetadataCache
 from denokv.kv import EndpointSelector
 from denokv.kv import Kv
-from denokv.kv import KvEntry
 from denokv.kv import KvFlags
 from denokv.kv import KvListOptions
-from denokv.kv import KvU64
 from denokv.kv import OpenKvFinalize
-from denokv.kv import VersionStamp
 from denokv.kv import normalize_key
 from denokv.kv import open_kv
 from denokv.kv_keys import KvKey
@@ -86,44 +85,6 @@ from test.denokv_testing import mk_db_meta
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 
 pytest_mark_asyncio = pytest.mark.asyncio()
-
-
-@given(v=st.integers(min_value=0, max_value=2**80 - 1))
-def test_VersionStamp_init(v: int) -> None:
-    vs_int = VersionStamp(v)
-    assert int(vs_int) == v
-    assert VersionStamp(str(vs_int)) == vs_int
-    assert VersionStamp(bytes(vs_int)) == vs_int
-    assert bytes(vs_int) == vs_int
-    assert isinstance(vs_int, bytes)
-
-
-@given(i=st.integers(min_value=0, max_value=2**64 - 1))
-def test_KvU64_init(i: int) -> None:
-    u64 = KvU64(i)
-    assert int(u64) == i
-    assert KvU64(bytes(u64)) == u64
-    assert u64.to_bytes() == bytes(u64)
-    assert u64.to_bytes() == i.to_bytes(8, "little")
-
-
-@given(
-    v1=st.integers(min_value=0, max_value=2**80 - 1),
-    v2=st.integers(min_value=0, max_value=2**80 - 1),
-)
-def test_VersionStamp_ordering(v1: int, v2: int) -> None:
-    vs1, vs2 = VersionStamp(v1), VersionStamp(v2)
-    if v1 < v2:
-        assert vs1 < vs2
-    elif v1 > v2:
-        assert vs1 > vs2
-    else:
-        assert vs1 == vs2
-
-
-def test_KVU64__bytes() -> None:
-    assert KvU64(bytes(KvU64(123456789))).value == 123456789
-    assert KvU64(KvU64(123456789).to_bytes()).value == 123456789
 
 
 def test_EndpointSelector__rejects_meta_without_strong_endpoint() -> None:

@@ -38,6 +38,9 @@ from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._datapath_pb2 import SnapshotReadStatus
 from denokv._datapath_pb2 import ValueEncoding
+from denokv._kv_values import KvEntry
+from denokv._kv_values import KvU64
+from denokv._kv_values import VersionStamp
 from denokv._pycompat.typing import Awaitable
 from denokv._pycompat.typing import Callable
 from denokv._pycompat.typing import Final
@@ -70,9 +73,6 @@ from denokv.datapath import pack_key_range
 from denokv.datapath import parse_protobuf_kv_entry
 from denokv.datapath import read_range_single
 from denokv.datapath import snapshot_read
-from denokv.kv import KvEntry
-from denokv.kv import KvU64
-from denokv.kv import VersionStamp
 from denokv.kv_keys import KvKey
 from denokv.result import Err
 from denokv.result import Ok

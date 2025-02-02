@@ -177,4 +177,4 @@ if TYPE_CHECKING:
 else:
 
     def assert_type(val: _T, typ: Any, /) -> _T:
-        pass
+        return val

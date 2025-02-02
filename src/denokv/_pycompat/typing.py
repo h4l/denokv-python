@@ -97,8 +97,6 @@ if TYPE_CHECKING:
     from typing_extensions import TypeAlias as TypeAlias
     from typing_extensions import TypeGuard as TypeGuard
     from typing_extensions import TypeIs as TypeIs
-    from typing_extensions import TypeVarTuple as TypeVarTuple
-    from typing_extensions import Unpack as Unpack
 else:
     Never = "Never"
     ParamSpec = "ParamSpec"
@@ -106,8 +104,6 @@ else:
     TypeAlias = "TypeAlias"
     TypeGuard = "TypeGuard"
     TypeIs = "TypeIs"
-    # TypeVarTuple = "TypeVarTuple"
-    # Unpack = "Unpack"
 
 if TYPE_CHECKING:
     from typing_extensions import TypeVar as TypeVar

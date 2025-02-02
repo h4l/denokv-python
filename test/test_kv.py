@@ -404,6 +404,23 @@ def db(create_db: partial[Kv]) -> Kv:
     return create_db()
 
 
+@pytest.fixture
+def stopped_loop() -> Generator[asyncio.AbstractEventLoop]:
+    """Get an asyncio loop that is not actively running anything."""
+    try:
+        loop = asyncio.new_event_loop()
+        yield loop
+        assert not loop.is_running()
+    finally:
+
+        async def close() -> None:
+            await asyncio.wait_for(loop.shutdown_asyncgens(), timeout=0.1)
+            await asyncio.wait_for(loop.shutdown_default_executor(), timeout=0.1)
+
+        loop.run_until_complete(close())
+        loop.close()
+
+
 def pack_kv_entry(
     key: AnyKvKey, value: bytes, versionstamp: int = 1
 ) -> ProtobufKvEntry:
@@ -1020,8 +1037,10 @@ async def test_close_via_finalizer__loop_running__auto() -> None:
     assert session.closed
 
 
-def test_close_via_finalizer__loop_not_running() -> None:
-    loop = asyncio.new_event_loop()
+def test_close_via_finalizer__loop_not_running(
+    stopped_loop: asyncio.AbstractEventLoop,
+) -> None:
+    loop = stopped_loop
     authenticator = Mock()
 
     async def create_session() -> aiohttp.ClientSession:

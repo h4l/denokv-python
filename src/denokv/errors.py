@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import cast
+
+from denokv._pycompat.typing import cast
 
 
 @dataclass(init=False)

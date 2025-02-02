@@ -5,12 +5,7 @@ import re
 import struct
 from datetime import datetime
 from datetime import timedelta
-from typing import Awaitable
-from typing import Callable
-from typing import Final
 from typing import Literal
-from typing import Mapping
-from typing import cast
 from uuid import UUID
 
 import pytest
@@ -23,7 +18,6 @@ from fdb.tuple import unpack
 from hypothesis import example
 from hypothesis import given
 from hypothesis import strategies as st
-from typing_extensions import TypeAlias
 from v8serialize import Decoder
 from yarl import URL
 
@@ -35,6 +29,12 @@ from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._datapath_pb2 import SnapshotReadStatus
 from denokv._datapath_pb2 import ValueEncoding
+from denokv._pycompat.typing import Awaitable
+from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Final
+from denokv._pycompat.typing import Mapping
+from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import cast
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo

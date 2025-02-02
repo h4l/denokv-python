@@ -1,8 +1,8 @@
 from typing import Literal
-from typing import cast
 
 import pytest
 
+from denokv._pycompat.typing import cast
 from denokv.kv_keys import Exclude
 from denokv.kv_keys import Include
 from denokv.kv_keys import IncludeAll

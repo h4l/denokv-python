@@ -4,11 +4,9 @@ import sys
 from enum import EnumMeta
 from enum import Flag
 from enum import IntFlag
-from typing import TYPE_CHECKING
-from typing import Iterator
 
-if TYPE_CHECKING:
-    from typing_extensions import Self
+from denokv._pycompat.typing import Iterator
+from denokv._pycompat.typing import Self
 
 
 class ContainsValueEnumMeta(EnumMeta):

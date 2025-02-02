@@ -9,17 +9,7 @@ import struct
 from dataclasses import dataclass
 from enum import Enum
 from enum import auto
-from typing import TYPE_CHECKING
-from typing import Awaitable
-from typing import Callable
-from typing import Container
-from typing import Final
-from typing import Protocol
-from typing import Type
-from typing import TypedDict
-from typing import Union
 from typing import overload
-from typing import runtime_checkable
 
 import aiohttp
 import aiohttp.client_exceptions
@@ -34,6 +24,19 @@ from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._datapath_pb2 import SnapshotReadStatus
 from denokv._datapath_pb2 import ValueEncoding
+from denokv._pycompat.typing import Awaitable
+from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Container
+from denokv._pycompat.typing import Final
+from denokv._pycompat.typing import Protocol
+from denokv._pycompat.typing import Type
+from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import TypedDict
+from denokv._pycompat.typing import TypeGuard
+from denokv._pycompat.typing import TypeVar
+from denokv._pycompat.typing import Union
+from denokv._pycompat.typing import Unpack
+from denokv._pycompat.typing import runtime_checkable
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo
@@ -45,55 +48,30 @@ from denokv.result import Result
 KV_KEY_PIECE_TYPES: Final = (str, bytes, int, float, bool)
 
 
-if TYPE_CHECKING:
-    from typing_extensions import TypeAlias
-    from typing_extensions import TypeGuard
-    from typing_extensions import TypeVar
-    from typing_extensions import Unpack
+KvKeyPiece: TypeAlias = Union[str, bytes, int, float, bool]
+KvKeyPieceT = TypeVar("KvKeyPieceT", bound=KvKeyPiece, default=KvKeyPiece)
 
-    KvKeyPiece: TypeAlias = Union[str, bytes, int, float, bool]
-    KvKeyPieceT = TypeVar("KvKeyPieceT", bound=KvKeyPiece, default=KvKeyPiece)
+KvKeyTuple: TypeAlias = tuple[KvKeyPieceT, ...]
+KvKeyTupleT = TypeVar("KvKeyTupleT", bound=KvKeyTuple, default=KvKeyTuple)
+KvKeyTupleT_co = TypeVar(
+    "KvKeyTupleT_co", bound=KvKeyTuple, default=KvKeyTuple, covariant=True
+)
 
-    KvKeyTuple: TypeAlias = tuple[KvKeyPieceT, ...]
-    KvKeyTupleT = TypeVar("KvKeyTupleT", bound=KvKeyTuple, default=KvKeyTuple)
-    KvKeyTupleT_co = TypeVar(
-        "KvKeyTupleT_co", bound=KvKeyTuple, default=KvKeyTuple, covariant=True
-    )
 
-    @runtime_checkable
-    class KvKeyEncodable(Protocol):
-        __slots__ = ()
+@runtime_checkable
+class KvKeyEncodable(Protocol):
+    __slots__ = ()
 
-        def kv_key_bytes(self) -> bytes: ...
+    def kv_key_bytes(self) -> bytes: ...
 
-    KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
-    AnyKvKey: TypeAlias = "KvKeyEncodable | KvKeyTuple"
-    AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey, default=AnyKvKey)
-    AnyKvKeyT_co = TypeVar(
-        "AnyKvKeyT_co", bound=AnyKvKey, default=AnyKvKey, covariant=True
-    )
-    AnyKvKeyT_con = TypeVar(
-        "AnyKvKeyT_con", bound=AnyKvKey, default=AnyKvKey, contravariant=True
-    )
-else:
-    from typing import TypeVar
 
-    KvKeyPiece: TypeAlias = "str | bytes | int | float | bool"
-    KvKeyPieceT = TypeVar("KvKeyPieceT", bound=KvKeyPiece)
-
-    KvKeyTuple: TypeAlias = tuple[KvKeyPieceT, ...]
-    KvKeyTupleT = TypeVar("KvKeyTupleT", bound=KvKeyTuple)
-    KvKeyTupleT_co = TypeVar("KvKeyTupleT_co", bound=KvKeyTuple, covariant=True)
-
-    @runtime_checkable
-    class KvKeyEncodable(Protocol):
-        def kv_key_bytes(self) -> bytes: ...
-
-    KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
-    AnyKvKey: TypeAlias = "KvKeyEncodable | KvKeyTuple"
-    AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey)
-    AnyKvKeyT_co = TypeVar("AnyKvKeyT", bound=AnyKvKey, covariant=True)
-    AnyKvKeyT_con = TypeVar("AnyKvKeyT_con", bound=AnyKvKey, contravariant=True)
+KvKeyEncodableT = TypeVar("KvKeyEncodableT", bound=KvKeyEncodable)
+AnyKvKey: TypeAlias = Union[KvKeyEncodable, KvKeyTuple]
+AnyKvKeyT = TypeVar("AnyKvKeyT", bound=AnyKvKey, default=AnyKvKey)
+AnyKvKeyT_co = TypeVar("AnyKvKeyT_co", bound=AnyKvKey, default=AnyKvKey, covariant=True)
+AnyKvKeyT_con = TypeVar(
+    "AnyKvKeyT_con", bound=AnyKvKey, default=AnyKvKey, contravariant=True
+)
 
 _T = TypeVar("_T")
 
@@ -196,9 +174,9 @@ class RequestUnsuccessful(DataPathDenoKvError):
     pass
 
 
-DataPathError: TypeAlias = (
-    "EndpointNotUsable | RequestUnsuccessful | ResponseUnsuccessful | ProtocolViolation"
-)
+DataPathError: TypeAlias = Union[
+    EndpointNotUsable, RequestUnsuccessful, ResponseUnsuccessful, ProtocolViolation
+]
 
 
 class _DataPathRequestKind(Enum):
@@ -300,7 +278,7 @@ async def _response_body_bytes(response: aiohttp.ClientResponse) -> Ok[bytes]:
         return Ok(await response.read())
 
 
-SnapshotReadResult: TypeAlias = "Result[SnapshotReadOutput, DataPathError]"
+SnapshotReadResult: TypeAlias = Result[SnapshotReadOutput, DataPathError]
 
 
 async def snapshot_read(

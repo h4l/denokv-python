@@ -4,20 +4,26 @@ import functools
 import sys
 from dataclasses import dataclass
 from dataclasses import field
-from typing import TYPE_CHECKING
-from typing import Any
-from typing import Final
-from typing import Generic
-from typing import Iterator
-from typing import Sequence
-from typing import Union
-from typing import cast
 from typing import overload
 
 from fdb.tuple import pack
 from fdb.tuple import unpack
 
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.typing import TYPE_CHECKING
+from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import Final
+from denokv._pycompat.typing import Generic
+from denokv._pycompat.typing import Iterator
+from denokv._pycompat.typing import Self
+from denokv._pycompat.typing import Sequence
+from denokv._pycompat.typing import SupportsIndex
+from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import TypeVar
+from denokv._pycompat.typing import TypeVarTuple
+from denokv._pycompat.typing import Union
+from denokv._pycompat.typing import Unpack
+from denokv._pycompat.typing import cast
 from denokv._pycompat.typing import override
 from denokv.datapath import KV_KEY_PIECE_TYPES
 from denokv.datapath import AnyKvKey
@@ -36,24 +42,10 @@ from denokv.datapath import pack_key_range
 from denokv.result import Nothing
 from denokv.result import Some
 
-if TYPE_CHECKING:
-    from typing_extensions import Self
-    from typing_extensions import SupportsIndex
-    from typing_extensions import TypeAlias
-    from typing_extensions import TypeVar
-    from typing_extensions import TypeVarTuple
-    from typing_extensions import Unpack
-
-    T = TypeVar("T", default=object)
-    # Note that the default arg doesn't seem to work with MyPy yet. The
-    # DefaultKvKey alias is what this should behave as when defaulted.
-    Pieces = TypeVarTuple("Pieces", default=Unpack[tuple[KvKeyPiece, ...]])
-else:
-    from typing import TypeVar
-
-    T = TypeVar("T")
-    Unpack = tuple  # hack to support py39 at runtime w/o typing_extensions
-    Pieces = TypeVar("Pieces")  # hack to support py39 at runtime w/o typing_extensions
+T = TypeVar("T", default=object)
+# Note that the default arg doesn't seem to work with MyPy yet. The
+# DefaultKvKey alias is what this should behave as when defaulted.
+Pieces = TypeVarTuple("Pieces", default=Unpack[tuple[KvKeyPiece, ...]])
 
 _T_co = TypeVar("_T_co", covariant=True)
 
@@ -447,23 +439,12 @@ StartBoundary: TypeAlias = Union[
 StopBoundary: TypeAlias = Union[
     IncludeAll, Include[AnyKvKeyT], IncludePrefix[AnyKvKeyT], Exclude[AnyKvKeyT]
 ]
-
-if TYPE_CHECKING:
-    StartT = TypeVar(
-        "StartT", bound=StartBoundary, default=StartBoundary, covariant=False
-    )
-    StartT_co = TypeVar(
-        "StartT_co", bound=StartBoundary, default=StartBoundary, covariant=True
-    )
-    StopT = TypeVar("StopT", bound=StopBoundary, default=StopBoundary, covariant=False)
-    StopT_co = TypeVar(
-        "StopT_co", bound=StopBoundary, default=StopBoundary, covariant=True
-    )
-else:
-    StartT = TypeVar("StartT", bound=StartBoundary, covariant=False)
-    StopT = TypeVar("StopT", bound=StopBoundary, covariant=False)
-    StartT_co = TypeVar("StartT_co", bound=StartBoundary, covariant=True)
-    StopT_co = TypeVar("StopT_co", bound=StopBoundary, covariant=True)
+StartT = TypeVar("StartT", bound=StartBoundary, default=StartBoundary, covariant=False)
+StartT_co = TypeVar(
+    "StartT_co", bound=StartBoundary, default=StartBoundary, covariant=True
+)
+StopT = TypeVar("StopT", bound=StopBoundary, default=StopBoundary, covariant=False)
+StopT_co = TypeVar("StopT_co", bound=StopBoundary, default=StopBoundary, covariant=True)
 
 
 @functools.total_ordering

@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
-from typing import Any
-from typing import Iterable
 from typing import Literal
-from typing import Sequence
-from typing import cast
 from unittest.mock import Mock
 
 import pytest
-from typing_extensions import Never
-from typing_extensions import TypeIs
 
+from denokv._pycompat.typing import TYPE_CHECKING
+from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import Iterable
+from denokv._pycompat.typing import Never
+from denokv._pycompat.typing import Sequence
+from denokv._pycompat.typing import TypeIs
+from denokv._pycompat.typing import cast
 from denokv.result import AnyFailure
 from denokv.result import AnySuccess
 from denokv.result import Err

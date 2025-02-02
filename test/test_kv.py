@@ -9,12 +9,6 @@ from datetime import datetime
 from datetime import timedelta
 from functools import partial
 from itertools import repeat
-from typing import TYPE_CHECKING
-from typing import Any
-from typing import AsyncGenerator
-from typing import Callable
-from typing import Mapping
-from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -40,6 +34,13 @@ from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._datapath_pb2 import SnapshotReadStatus
 from denokv._datapath_pb2 import ValueEncoding
 from denokv._pycompat.enum import StrEnum
+from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import AsyncGenerator
+from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Generator
+from denokv._pycompat.typing import Mapping
+from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import cast
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata
@@ -83,11 +84,6 @@ from test.denokv_testing import add_entries
 from test.denokv_testing import assume_ok
 from test.denokv_testing import mk_db_meta
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
-
-if TYPE_CHECKING:
-    from typing import Generator
-
-    from typing_extensions import TypeAlias
 
 pytest_mark_asyncio = pytest.mark.asyncio()
 

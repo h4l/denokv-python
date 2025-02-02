@@ -2,11 +2,6 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from typing import Any
-from typing import Awaitable
-from typing import Callable
-from typing import Sequence
-from typing import cast
 from uuid import UUID
 
 import aiohttp
@@ -14,9 +9,14 @@ import pytest
 import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestClient as _TestClient
-from typing_extensions import TypeAlias
 from yarl import URL
 
+from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import Awaitable
+from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Sequence
+from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import cast
 from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.auth import ConsistencyLevel
 from denokv.auth import DatabaseMetadata

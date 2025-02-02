@@ -6,14 +6,12 @@ import time as time_
 from dataclasses import dataclass
 from enum import IntEnum
 from itertools import count
-from typing import TYPE_CHECKING
-from typing import Callable
-from typing import Iterable
-from typing import Iterator
 from typing import Literal
 
-if TYPE_CHECKING:
-    from typing_extensions import TypeAlias
+from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Iterable
+from denokv._pycompat.typing import Iterator
+from denokv._pycompat.typing import TypeAlias
 
 Backoff: TypeAlias = Iterable[float]
 """

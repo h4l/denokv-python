@@ -12,18 +12,7 @@ from enum import Flag
 from enum import auto
 from os import environ
 from types import TracebackType
-from typing import TYPE_CHECKING
-from typing import AsyncIterator
-from typing import Awaitable
-from typing import Callable
-from typing import ClassVar
-from typing import Final
-from typing import Generic
-from typing import Iterable
 from typing import Literal
-from typing import Protocol
-from typing import Sequence
-from typing import TypedDict
 from typing import overload
 
 import aiohttp
@@ -36,6 +25,21 @@ from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.typing import AsyncIterator
+from denokv._pycompat.typing import Awaitable
+from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import ClassVar
+from denokv._pycompat.typing import Final
+from denokv._pycompat.typing import Generic
+from denokv._pycompat.typing import Iterable
+from denokv._pycompat.typing import Protocol
+from denokv._pycompat.typing import Self
+from denokv._pycompat.typing import Sequence
+from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import TypedDict
+from denokv._pycompat.typing import TypeVar
+from denokv._pycompat.typing import TypeVarTuple
+from denokv._pycompat.typing import Unpack
 from denokv._pycompat.typing import override
 from denokv.asyncio import loop_time
 from denokv.auth import ConsistencyLevel
@@ -66,23 +70,10 @@ from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result
 
-if TYPE_CHECKING:
-    from typing_extensions import Self
-    from typing_extensions import TypeAlias
-    from typing_extensions import TypeVar
-    from typing_extensions import TypeVarTuple
-    from typing_extensions import Unpack
-
-    T = TypeVar("T", default=object)
-    # Note that the default arg doesn't seem to work with MyPy yet. The
-    # DefaultKvKey alias is what this should behave as when defaulted.
-    Pieces = TypeVarTuple("Pieces", default=Unpack[tuple[KvKeyPiece, ...]])
-else:
-    from typing import TypeVar
-
-    T = TypeVar("T")
-    Unpack = tuple  # hack to support py39 at runtime w/o typing_extensions
-    Pieces = TypeVar("Pieces")  # hack to support py39 at runtime w/o typing_extensions
+T = TypeVar("T", default=object)
+# Note that the default arg doesn't seem to work with MyPy yet. The
+# DefaultKvKey alias is what this should behave as when defaulted.
+Pieces = TypeVarTuple("Pieces", default=Unpack[tuple[KvKeyPiece, ...]])
 
 SAFE_FLOAT_INT_RANGE: Final = range(-(2**53 - 1), 2**53)  # 2**53 - 1 is max safe
 
@@ -860,9 +851,9 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
         return Ok((result.value, endpoint))
 
 
-_KvSnapshotReadResult: TypeAlias = (
-    "Result[tuple[SnapshotReadOutput, EndpointInfo], DataPathError]"
-)
+_KvSnapshotReadResult: TypeAlias = Result[
+    tuple[SnapshotReadOutput, EndpointInfo], DataPathError
+]
 
 
 @dataclass(frozen=True)

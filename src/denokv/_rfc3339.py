@@ -4,10 +4,10 @@ import re
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
-from typing import Final
-from typing import TypedDict
-from typing import cast
 
+from denokv._pycompat.typing import Final
+from denokv._pycompat.typing import TypedDict
+from denokv._pycompat.typing import cast
 from denokv.result import Err
 from denokv.result import Ok
 from denokv.result import Result

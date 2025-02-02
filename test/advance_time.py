@@ -4,12 +4,13 @@ import asyncio
 import time
 from dataclasses import dataclass
 from dataclasses import field
-from typing import Callable
-from typing import Final
-from typing import Generator
 from unittest.mock import patch
 
 import pytest
+
+from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Final
+from denokv._pycompat.typing import Generator
 
 
 @pytest.fixture

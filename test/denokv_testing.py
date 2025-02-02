@@ -8,13 +8,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
 from itertools import groupby
-from typing import Any
-from typing import ClassVar
-from typing import Iterable
-from typing import Mapping
-from typing import NamedTuple
-from typing import Sequence
-from typing import TypeVar
 from typing import overload
 from uuid import UUID
 
@@ -26,6 +19,13 @@ from denokv._datapath_pb2 import KvValue
 from denokv._datapath_pb2 import ReadRange
 from denokv._datapath_pb2 import ReadRangeOutput
 from denokv._datapath_pb2 import ValueEncoding
+from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import ClassVar
+from denokv._pycompat.typing import Iterable
+from denokv._pycompat.typing import Mapping
+from denokv._pycompat.typing import NamedTuple
+from denokv._pycompat.typing import Sequence
+from denokv._pycompat.typing import TypeVar
 from denokv.auth import DatabaseMetadata
 from denokv.auth import EndpointInfo
 from denokv.datapath import AnyKvKey

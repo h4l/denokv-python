@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping
-from typing import Sequence
-from typing import cast
 from uuid import UUID
 
 import aiohttp
@@ -13,6 +10,9 @@ from yarl import URL
 
 from denokv._pycompat.dataclasses import slots_if310
 from denokv._pycompat.enum import StrEnum
+from denokv._pycompat.typing import Mapping
+from denokv._pycompat.typing import Sequence
+from denokv._pycompat.typing import cast
 from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.errors import DenoKvError
 from denokv.errors import DenoKvValidationError

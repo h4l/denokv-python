@@ -2,31 +2,29 @@ from __future__ import annotations
 
 from abc import ABCMeta
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-from typing import Any
-from typing import Callable
-from typing import Final
-from typing import Generic
-from typing import Iterable
-from typing import Iterator
-from typing import Protocol
-from typing import TypeVar
-from typing import Union
-from typing import cast
 from typing import overload
-from typing import runtime_checkable
 
 from denokv._pycompat.dataclasses import slots_if310
+from denokv._pycompat.typing import TYPE_CHECKING
+from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import Callable
+from denokv._pycompat.typing import Final
+from denokv._pycompat.typing import Generic
+from denokv._pycompat.typing import Iterable
+from denokv._pycompat.typing import Iterator
+from denokv._pycompat.typing import Never
+from denokv._pycompat.typing import ParamSpec
+from denokv._pycompat.typing import Protocol
+from denokv._pycompat.typing import Self
+from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import TypeGuard
+from denokv._pycompat.typing import TypeIs
+from denokv._pycompat.typing import TypeVar
+from denokv._pycompat.typing import Union
+from denokv._pycompat.typing import cast
+from denokv._pycompat.typing import runtime_checkable
 
-if TYPE_CHECKING:
-    from typing_extensions import Never
-    from typing_extensions import ParamSpec
-    from typing_extensions import Self
-    from typing_extensions import TypeAlias
-    from typing_extensions import TypeGuard
-    from typing_extensions import TypeIs
-
-    P = ParamSpec("P")
+P = ParamSpec("P")
 
 
 @runtime_checkable

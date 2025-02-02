@@ -1,11 +1,10 @@
-from typing import cast
-
 import pytest
 
 from denokv._datapath_pb2 import AtomicWriteStatus
 from denokv._datapath_pb2 import MutationType
 from denokv._datapath_pb2 import ValueEncoding
 from denokv._pycompat.protobuf import enum_name
+from denokv._pycompat.typing import cast
 
 
 def test_enum_name() -> None:

@@ -3,13 +3,13 @@ from __future__ import annotations
 import re
 import weakref
 from typing import Literal
-from typing import Sequence
-from typing import cast
 
 import pytest
 from fdb.tuple import pack
-from typing_extensions import Unpack
 
+from denokv._pycompat.typing import Sequence
+from denokv._pycompat.typing import Unpack
+from denokv._pycompat.typing import cast
 from denokv.datapath import AnyKvKey
 from denokv.datapath import KvKeyEncodable
 from denokv.datapath import KvKeyPiece

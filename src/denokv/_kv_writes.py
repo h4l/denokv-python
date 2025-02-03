@@ -1,34 +1,41 @@
 from __future__ import annotations
 
-from abc import ABC
 from abc import abstractmethod
+from builtins import float as float_
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
 from enum import Enum
+from functools import total_ordering
 from itertools import islice
 from types import MappingProxyType
 from typing import Literal
 from typing import overload
 
-import v8serialize
 from v8serialize import Encoder
-from v8serialize.constants import SerializationTag
-from v8serialize.decode import ReadableTagStream
+from v8serialize.constants import FLOAT64_SAFE_INT_RANGE
+from v8serialize.encode import WritableTagStream
+from v8serialize.jstypes import JSBigInt
 
 from denokv import _datapath_pb2 as dp_protobuf
 from denokv._datapath_pb2 import AtomicWrite
-from denokv._kv_types import AtomicWriteRepresentation
+from denokv._kv_types import AtomicWriteRepresentationWriter
 from denokv._kv_types import KvWriter
+from denokv._kv_types import ProtobufMessageRepresentation
+from denokv._kv_types import SingleProtobufMessageRepresentation
+from denokv._kv_types import get_v8_encoder
 from denokv._kv_values import KvEntry as KvEntry
 from denokv._kv_values import KvU64 as KvU64
 from denokv._kv_values import VersionStamp as VersionStamp
 from denokv._pycompat.dataclasses import FrozenAfterInitDataclass
 from denokv._pycompat.dataclasses import slots_if310
 from denokv._pycompat.enum import EvalEnumRepr
-from denokv._pycompat.protobuf import enum_name
+from denokv._pycompat.exceptions import with_notes
 from denokv._pycompat.typing import TYPE_CHECKING
+from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import ClassVar
 from denokv._pycompat.typing import Container
+from denokv._pycompat.typing import Generic
 from denokv._pycompat.typing import Mapping
 from denokv._pycompat.typing import MutableSequence
 from denokv._pycompat.typing import Never
@@ -36,20 +43,728 @@ from denokv._pycompat.typing import Protocol
 from denokv._pycompat.typing import Self
 from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import TypeAlias
+from denokv._pycompat.typing import TypedDict
+from denokv._pycompat.typing import TypeGuard
 from denokv._pycompat.typing import TypeIs
+from denokv._pycompat.typing import TypeVar
 from denokv._pycompat.typing import Union
+from denokv._pycompat.typing import Unpack
+from denokv._pycompat.typing import assert_never
 from denokv._pycompat.typing import cast
+from denokv._pycompat.typing import override
 from denokv._pycompat.typing import runtime_checkable
+from denokv._utils import frozen
+from denokv.auth import EndpointInfo
 from denokv.backoff import Backoff
 from denokv.backoff import ExponentialBackoff
 from denokv.datapath import AnyKvKey
+from denokv.datapath import CheckFailure
 from denokv.datapath import pack_key
 from denokv.kv_keys import KvKey
 from denokv.result import AnyFailure
 from denokv.result import AnySuccess
+from denokv.result import is_err
+
+KvNumberNameT = TypeVar("KvNumberNameT", bound=str, default=str)
+NumberT = TypeVar("NumberT", bound=int | float, default=int | float)
+KvNumberTypeT = TypeVar("KvNumberTypeT", default=object)
+
+KvNumberNameT_co = TypeVar("KvNumberNameT_co", bound=str, covariant=True, default=str)
+NumberT_co = TypeVar(
+    "NumberT_co", bound=int | float, covariant=True, default=int | float
+)
+KvNumberTypeT_co = TypeVar("KvNumberTypeT_co", covariant=True, default=object)
+U = TypeVar("U")
 
 
-def encode_kv_write_value(value: object, *, v8_encoder: Encoder) -> dp_protobuf.KvValue:
+@total_ordering
+@dataclass(frozen=True, unsafe_hash=True, **slots_if310())
+class KvNumberInfo(Generic[KvNumberNameT_co, NumberT, KvNumberTypeT]):
+    name: KvNumberNameT_co = field(init=False)
+    py_type: type[NumberT] = field(init=False)
+    kv_type: type[KvNumberTypeT] = field(init=False)
+
+    @property
+    @abstractmethod
+    def default_limit(self) -> Limit[NumberT]: ...
+
+    @abstractmethod
+    def validate_limit(self, limit: Limit[NumberT]) -> Limit[NumberT]: ...
+
+    def __lt__(self, other: object) -> bool:
+        if isinstance(other, KvNumberInfo):
+            self_name: str = self.name  # mypy needs help with inferring str
+            other_name: str = other.name
+
+            if self_name == other_name and self != other:
+                raise RuntimeError("KvNumberInfo instances must have unique names")
+            return self_name < other_name
+        return NotImplemented
+
+    def as_py_number(self, number: KvNumberTypeT | NumberT | int) -> NumberT:
+        if self.is_py_number(number):
+            return number
+        if self.is_kv_number(number) or self._is_compatible_int(number, target="py"):
+            return self.py_type(number)  # type: ignore[arg-type,return-value]
+        raise self._describe_invalid_number(number, target="py")
+
+    def as_kv_number(self, number: KvNumberTypeT | NumberT | int) -> KvNumberTypeT:
+        if self.is_kv_number(number):
+            return number
+        if self.is_py_number(number) or self._is_compatible_int(number, target="kv"):
+            return self.kv_type(number)  # type: ignore[call-arg]
+        raise self._describe_invalid_number(number, target="kv")
+
+    def _is_compatible_int(
+        self, number: object, *, target: Literal["py", "kv"]
+    ) -> TypeGuard[int]:
+        return type(number) is int
+
+    def _describe_invalid_number(
+        self, number: object, *, target: Literal["py", "kv"]
+    ) -> Exception:
+        return with_notes(
+            TypeError(
+                f"number is not compatible with {self.name} {target} number type"
+            ),
+            f"number: {number!r} ({type(number)}), " f"{self.name}={self}",
+        )
+
+    def is_py_number(self, value: object) -> TypeGuard[NumberT]:
+        return isinstance(value, self.py_type)
+
+    def is_kv_number(self, value: object) -> TypeGuard[KvNumberTypeT]:
+        return isinstance(value, self.kv_type)
+
+    @abstractmethod
+    def get_sum_mutations(
+        self,
+        sum: Sum[KvNumberNameT_co, NumberT, KvNumberTypeT],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]: ...
+
+    @abstractmethod
+    def get_min_mutations(
+        self,
+        min: Min[KvNumberNameT_co, NumberT, KvNumberTypeT],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]: ...
+
+    @abstractmethod
+    def get_max_mutations(
+        self,
+        max: Max[KvNumberNameT_co, NumberT, KvNumberTypeT],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]: ...
+
+
+class V8KvNumberInfo(KvNumberInfo[KvNumberNameT_co, NumberT, KvNumberTypeT]):
+    @property
+    def default_limit(self) -> Limit[NumberT]:
+        return LIMIT_UNLIMITED
+
+    def validate_limit(self, limit: Limit[NumberT]) -> Limit[NumberT]:
+        if limit.limit_exceeded not in (
+            LimitExceededPolicy.ABORT,
+            LimitExceededPolicy.CLAMP,
+        ):
+            raise with_notes(
+                ValueError(f"Number type {self.name!r} does not support wrap limits"),
+                "Use 'u64' (KvU64) to wrap on 0, 2^64 - 1 bounds.",
+            )
+        return limit
+
+    @abstractmethod
+    def v8_encode_kv_number(self, value: KvNumberTypeT) -> bytes: ...
+
+    @override
+    def get_sum_mutations(
+        self,
+        sum: Sum[KvNumberNameT_co, NumberT, KvNumberTypeT],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]:
+        encoded_min = b""
+        encoded_max = b""
+        self.validate_limit(sum.limit)
+        if sum.limit.min is not None:
+            encoded_min = self.v8_encode_kv_number(self.as_kv_number(sum.limit.min))
+        if sum.limit.max is not None:
+            encoded_max = self.v8_encode_kv_number(self.as_kv_number(sum.limit.max))
+
+        mutation = dp_protobuf.Mutation(
+            mutation_type=dp_protobuf.MutationType.M_SUM,
+            key=pack_key(sum.key),
+            value=dp_protobuf.KvValue(
+                data=self.v8_encode_kv_number(self.as_kv_number(sum.delta)),
+                encoding=dp_protobuf.ValueEncoding.VE_V8,
+            ),
+            expire_at_ms=sum.expire_at_ms(),
+            sum_min=encoded_min,
+            sum_max=encoded_max,
+            sum_clamp=sum.limit.limit_exceeded is LimitExceededPolicy.CLAMP,
+        )
+
+        return [mutation]
+
+    @override
+    def get_min_mutations(
+        self,
+        min: Min[KvNumberNameT_co, NumberT, KvNumberTypeT],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]:
+        mutation = dp_protobuf.Mutation(
+            mutation_type=dp_protobuf.MutationType.M_SUM,
+            key=pack_key(min.key),
+            value=dp_protobuf.KvValue(
+                data=self.v8_encode_kv_number(self.as_kv_number(self.as_py_number(0))),
+                encoding=dp_protobuf.ValueEncoding.VE_V8,
+            ),
+            sum_max=self.v8_encode_kv_number(self.as_kv_number(min.value)),
+            sum_clamp=True,
+            expire_at_ms=min.expire_at_ms(),
+        )
+        return [mutation]
+
+    @override
+    def get_max_mutations(
+        self,
+        max: Max[KvNumberNameT_co, NumberT, KvNumberTypeT],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]:
+        mutation = dp_protobuf.Mutation(
+            mutation_type=dp_protobuf.MutationType.M_SUM,
+            key=pack_key(max.key),
+            value=dp_protobuf.KvValue(
+                data=self.v8_encode_kv_number(self.as_kv_number(self.as_py_number(0))),
+                encoding=dp_protobuf.ValueEncoding.VE_V8,
+            ),
+            sum_min=self.v8_encode_kv_number(self.as_kv_number(max.value)),
+            sum_clamp=True,
+            expire_at_ms=max.expire_at_ms(),
+        )
+        return [mutation]
+
+
+class BigIntKvNumberInfo(V8KvNumberInfo[Literal["bigint"], int, JSBigInt]):
+    __slots__ = ()
+    name = "bigint"
+    py_type = int
+    kv_type = JSBigInt
+
+    def v8_encode_kv_number(self, value: JSBigInt) -> bytes:
+        return encode_v8_bigint(value)
+
+    @override
+    def is_py_number(self, value: object) -> TypeGuard[int]:
+        # Don't treat JSBigInt instances as being py numbers so that we downcast
+        # JSBigInt to plain int in as_py_number(). This is important to allow
+        # other things to not treat JSBigInt as the same as int.
+        return (not self.is_kv_number(value)) and super().is_py_number(value)
+
+
+class FloatKvNumberInfo(V8KvNumberInfo[Literal["float"], float, float]):
+    __slots__ = ()
+    name = "float"
+    py_type = float
+    kv_type = float
+
+    def v8_encode_kv_number(self, value: float) -> bytes:
+        return encode_v8_number(value)
+
+    def _is_int_in_float_safe_range(self, value: object) -> TypeGuard[int]:
+        # int is assignable to float in Python's type system, but
+        # isinstance(int(x), float) is False. We don't allow subclasses of int,
+        # because JSBigInt is a subclass of int, and we don't want to treat them
+        # as FloatKvNumberInfo values.
+        return type(value) is int and value in FLOAT64_SAFE_INT_RANGE
+
+    @override
+    def is_kv_number(self, value: object) -> TypeGuard[float]:
+        return self._is_int_in_float_safe_range(value) or super().is_kv_number(value)
+
+    @override
+    def is_py_number(self, value: object) -> TypeGuard[float]:
+        return self._is_int_in_float_safe_range(value) or super().is_py_number(value)
+
+    @override
+    def _is_compatible_int(
+        self, number: object, *, target: Literal["py", "kv"]
+    ) -> TypeGuard[int]:
+        # only allow conversions from plain int that is in the safe range.
+        return self._is_int_in_float_safe_range(number)
+
+    @override
+    def _describe_invalid_number(
+        self, number: object, *, target: Literal["py", "kv"]
+    ) -> Exception:
+        err = super()._describe_invalid_number(number, target=target)
+        if type(number) is int and not self._is_int_in_float_safe_range(number):
+            return with_notes(
+                ValueError(*err.args),
+                "The int is too large to represent as a 64-bit floating point value.",
+                from_exception=err,
+            )
+        return err
+
+
+class U64KvNumberInfo(KvNumberInfo[Literal["u64"], int, KvU64]):
+    __slots__ = ()
+    name = "u64"
+    py_type = int
+    kv_type = KvU64
+
+    @property
+    def default_limit(self) -> Limit[int]:
+        return LIMIT_KVU64
+
+    @override
+    def validate_limit(self, limit: Limit[int]) -> Limit[int]:
+        if limit.limit_exceeded is LimitExceededPolicy.ABORT:
+            raise with_notes(
+                ValueError(f"Number type {self.name!r} does not support abort limits"),
+                "Use 'bigint' (JSBigInt) or 'float' (int/float) to wrap on "
+                "0, 2^64 - 1 bounds.",
+            )
+
+        if limit.limit_exceeded is LimitExceededPolicy.WRAP and limit != LIMIT_KVU64:
+            raise with_notes(
+                ValueError(
+                    f"Number type {self.name!r} wrap limit's min, max "
+                    f"bounds cannot be changed"
+                ),
+                "'u64' (KvU64) can only wrap at 0 and 2^64 - 1. It can use "
+                "clamp with custom bounds through.",
+            )
+        return limit
+
+    @override
+    def get_sum_mutations(
+        self,
+        sum: Sum[Literal["u64"], int, KvU64],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]:
+        self.validate_limit(sum.limit)
+        assert sum.limit.limit_exceeded is not LimitExceededPolicy.ABORT
+        if sum.limit.limit_exceeded is LimitExceededPolicy.WRAP:
+            return self._get_sum_wrap_mutations(sum)
+        elif sum.limit.limit_exceeded is LimitExceededPolicy.CLAMP:
+            return self._get_sum_clamp_mutations(sum)
+        else:
+            assert_never(sum.limit.limit_exceeded)
+
+    def _get_sum_clamp_mutations(
+        self, sum: Sum[Literal["u64"], int, KvU64]
+    ) -> Sequence[dp_protobuf.Mutation]:
+        assert sum.limit.limit_exceeded is LimitExceededPolicy.CLAMP
+
+        limit_min = 0 if sum.limit.min is None else sum.limit.min
+        limit_max = KvU64.RANGE.stop - 1 if sum.limit.max is None else sum.limit.max
+        if limit_min not in KvU64.RANGE:
+            raise with_notes(
+                ValueError("sum.limit.min must be in KvU64.RANGE"),
+                f"sum.limit.min: {limit_min}",
+            )
+        if limit_max not in KvU64.RANGE:
+            raise with_notes(
+                ValueError("sum.limit.max must be in KvU64.RANGE"),
+                f"sum.limit.max: {limit_max}",
+            )
+
+        delta = self._normalise_clamp_delta(sum.delta)
+
+        if delta < 0:
+            return self._get_negative_sum_clamp_mutations(
+                sum, delta, limit_min, limit_max
+            )
+        else:
+            return self._get_positive_sum_clamp_mutations(
+                sum, delta, limit_min, limit_max
+            )
+
+    def _get_positive_sum_clamp_mutations(
+        self,
+        sum: Sum[Literal["u64"], int, KvU64],
+        delta: int,
+        limit_min: int,
+        limit_max: int,
+    ) -> Sequence[dp_protobuf.Mutation]:
+        assert delta in KvU64.RANGE
+        assert limit_min in KvU64.RANGE
+        assert limit_max in KvU64.RANGE
+
+        # When the upper limit is <= the delta, the result is always clamped at the
+        # upper limit. Likewise if the lower limit pushes the result above the upper
+        # limit, the upper limit is used (it's applied last).
+        min_result = delta
+        if limit_max <= min_result or limit_max <= (limit_min or 0):
+            return [self._mutate_set(sum, KvU64(limit_max))]  # result is constant
+
+        mutations = list[dp_protobuf.Mutation]()
+
+        if limit_min >= limit_max or limit_min <= delta:
+            limit_min = 0  # lower bound can have no effect on the result
+
+        # We clamp the final result to be <= the limit_max by clamping the db
+        # value to the highest value that won't exceed the limit_max when the
+        # delta is added.
+
+        # delta is always < limit_max, otherwise the result is constant, which
+        # is handled above.
+        max_start = limit_max - delta
+        assert max_start > 0
+        mutations.append(self._mutate_min(sum, KvU64(max_start)))
+
+        if delta != 0:
+            mutations.append(self._mutate_sum(sum, KvU64(delta)))
+
+        if limit_min > 0:
+            mutations.append(self._mutate_max(sum, KvU64(limit_min)))
+
+        return mutations
+
+    def _get_negative_sum_clamp_mutations(
+        self,
+        sum: Sum[Literal["u64"], int, KvU64],
+        delta: int,
+        limit_min: int,
+        limit_max: int,
+    ) -> Sequence[dp_protobuf.Mutation]:
+        assert -delta in KvU64.RANGE
+        assert limit_min in KvU64.RANGE
+        assert limit_max in KvU64.RANGE
+
+        # If value after adding the (negative) delta is always <= the lower
+        # limit, the lower limit is always the result. However the upper limit
+        # applies last, so if the upper limit is lower than the lower limit, it
+        # applies instead.
+        if limit_max <= limit_min:
+            return [self._mutate_set(sum, KvU64(limit_max))]
+        max_result = (KvU64.RANGE.stop - 1) + delta
+        if limit_min >= max_result:
+            assert limit_max > limit_min
+            return [self._mutate_set(sum, KvU64(limit_min))]
+
+        mutations = list[dp_protobuf.Mutation]()
+
+        # Offset the start to prevent it going negative after adding the delta
+        min_start = abs(delta) + limit_min
+        # min_start cannot exceed the range, because abs(delta) values >= the
+        # difference between limit_min and the top of the range trigger the
+        # constant result short-circuit above, as the result is always limit_min
+        assert min_start in KvU64.RANGE
+        mutations.append(self._mutate_max(sum, KvU64(min_start)))
+
+        # Make the negative delta a positive delta that overflows to the result
+        # of applying the original negative delta offset.
+        if delta != 0:
+            delta = KvU64.RANGE.stop + delta
+            assert delta in KvU64.RANGE
+
+            # Apply the delta (effectively subtracting)
+            mutations.append(self._mutate_sum(sum, KvU64(delta)))
+
+        if limit_max >= max_result:
+            # limit_max can have no effect on the result
+            assert limit_max > limit_min
+        else:
+            mutations.append(self._mutate_min(sum, KvU64(limit_max)))
+
+        return mutations
+
+    def _get_sum_wrap_mutations(
+        self, sum: Sum[Literal["u64"], int, KvU64]
+    ) -> Sequence[dp_protobuf.Mutation]:
+        assert sum.limit.limit_exceeded is LimitExceededPolicy.WRAP
+        # Only one wrapping limit is available for KvU64
+        # (the default 64-bit uint bounds).
+        if sum.limit != LIMIT_KVU64:
+            raise with_notes(
+                ValueError(
+                    f"Deno KV does not support {LimitExceededPolicy.WRAP} with "
+                    f"non-default min/max for KvU64 values"
+                ),
+                f"sum.limit: {sum.limit}",
+            )
+
+        delta = self._normalise_wrap_delta(sum.delta)
+        # M_SUM mutations for KvU64 only support positive delta values, because
+        # KvU64 is unsigned. We support negative effective deltas by taking
+        # advantage of integer overflow/wrapping — we add a positive value that
+        # overflows to the equivalent of subtracting delta.
+        #
+        # For example to subtract 2 from 10, we are calculating
+        # (10 + (2**64 - 2)) % 2**64 = 8
+        if delta < 0:
+            delta = KvU64.RANGE.stop + delta
+        assert delta in KvU64.RANGE
+
+        return [self._mutate_sum(sum, KvU64(delta))]
+
+    @override
+    def get_min_mutations(
+        self,
+        min: Min[Literal["u64"], int, KvU64],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]:
+        mutation = dp_protobuf.Mutation(
+            mutation_type=dp_protobuf.MutationType.M_MIN,
+            key=pack_key(min.key),
+            value=dp_protobuf.KvValue(
+                data=bytes(KvU64(min.value)),
+                encoding=dp_protobuf.ValueEncoding.VE_LE64,
+            ),
+            expire_at_ms=min.expire_at_ms(),
+        )
+        return [mutation]
+
+    @override
+    def get_max_mutations(
+        self,
+        max: Max[Literal["u64"], int, KvU64],
+        *,
+        v8_encoder: Encoder | None = None,
+    ) -> Sequence[dp_protobuf.Mutation]:
+        mutation = dp_protobuf.Mutation(
+            mutation_type=dp_protobuf.MutationType.M_MAX,
+            key=pack_key(max.key),
+            value=dp_protobuf.KvValue(
+                data=bytes(KvU64(max.value)),
+                encoding=dp_protobuf.ValueEncoding.VE_LE64,
+            ),
+            expire_at_ms=max.expire_at_ms(),
+        )
+        return [mutation]
+
+    @staticmethod
+    def _normalise_wrap_delta(delta: int) -> int:
+        """
+        Normalise a sum delta value to be within +/- 2**64 for limit type wrap.
+
+        This method wraps delta values larger than 2**64 - 1, in contrast with
+        _normalise_clamp_delta(), which clamps at the max value.
+
+        Examples
+        --------
+        >>> U64KvNumberInfo._normalise_wrap_delta(-5)
+        -5
+        >>> U64KvNumberInfo._normalise_wrap_delta(-5 - 2**64)
+        -5
+        >>> U64KvNumberInfo._normalise_wrap_delta(5)
+        5
+        >>> U64KvNumberInfo._normalise_wrap_delta(5 + 2**64)
+        5
+        >>> U64KvNumberInfo._normalise_wrap_delta(2**64)
+        0
+        >>> U64KvNumberInfo._normalise_wrap_delta(-2**64)
+        0
+        """
+        pos_wrapped_delta = abs(delta) % KvU64.RANGE.stop
+        return -pos_wrapped_delta if delta < 0 else pos_wrapped_delta
+
+    @staticmethod
+    def _normalise_clamp_delta(delta: int) -> int:
+        """
+        Normalise a sum delta value to be within +/- 2**64 for limit type clamp.
+
+        This method clamps delta values larger than 2**64 - 1 at the max value,
+        in contrast with _normalise_wrap_delta(), which wraps over the max value.
+
+        Examples
+        --------
+        >>> U64KvNumberInfo._normalise_clamp_delta(-5)
+        -5
+        >>> U64KvNumberInfo._normalise_clamp_delta(-5 - 2**64)
+        -18446744073709551615
+        >>> U64KvNumberInfo._normalise_clamp_delta(5)
+        5
+        >>> U64KvNumberInfo._normalise_clamp_delta(5 + 2**64)
+        18446744073709551615
+        >>> U64KvNumberInfo._normalise_clamp_delta(2**64)
+        18446744073709551615
+        >>> U64KvNumberInfo._normalise_clamp_delta(-2**64)
+        -18446744073709551615
+        """
+        pos_clamped_delta = min(abs(delta), KvU64.RANGE.stop - 1)
+        return -pos_clamped_delta if delta < 0 else pos_clamped_delta
+
+    def _mutate(
+        self,
+        sum: Sum[Literal["u64"], int, KvU64],
+        mutation_type: dp_protobuf.MutationType,
+        value: KvU64,
+    ) -> dp_protobuf.Mutation:
+        return dp_protobuf.Mutation(
+            key=pack_key(sum.key),
+            expire_at_ms=sum.expire_at_ms(),
+            mutation_type=mutation_type,
+            value=dp_protobuf.KvValue(data=bytes(value), encoding=dp_protobuf.VE_LE64),
+        )
+
+    def _mutate_set(
+        self, sum: Sum[Literal["u64"], int, KvU64], value: KvU64
+    ) -> dp_protobuf.Mutation:
+        return self._mutate(sum, dp_protobuf.MutationType.M_SET, value)
+
+    def _mutate_max(
+        self, sum: Sum[Literal["u64"], int, KvU64], value: KvU64
+    ) -> dp_protobuf.Mutation:
+        return self._mutate(sum, dp_protobuf.MutationType.M_MAX, value)
+
+    def _mutate_min(
+        self, sum: Sum[Literal["u64"], int, KvU64], value: KvU64
+    ) -> dp_protobuf.Mutation:
+        return self._mutate(sum, dp_protobuf.MutationType.M_MIN, value)
+
+    def _mutate_sum(
+        self, sum: Sum[Literal["u64"], int, KvU64], value: KvU64
+    ) -> dp_protobuf.Mutation:
+        return self._mutate(sum, dp_protobuf.MutationType.M_SUM, value)
+
+
+@frozen
+@total_ordering
+class KvNumber(Enum):
+    """The types of numbers that the atomic sum/min/max operations can be used with."""
+
+    # _value_: KvNumberInfo
+
+    bigint = BigIntKvNumberInfo()
+    """A JavaScript bigint — arbitrary-precision integer."""
+    float = FloatKvNumberInfo()
+    """A JavaScript number — 64-bit floating-point number."""
+    u64 = U64KvNumberInfo()
+    """A Deno KV-specific 64-bit unsigned integer."""
+
+    @overload
+    @classmethod
+    def resolve(
+        cls, identifier: BigIntKvNumberIdentifier
+    ) -> Literal[KvNumber.bigint]: ...
+
+    @overload
+    @classmethod
+    def resolve(
+        cls, identifier: FloatKvNumberIdentifier
+    ) -> Literal[KvNumber.float]: ...
+
+    @overload
+    @classmethod
+    def resolve(cls, identifier: U64KvNumberIdentifier) -> Literal[KvNumber.u64]: ...
+
+    @overload
+    @classmethod
+    def resolve(cls, identifier: KvNumber) -> LiteralKvNumber: ...
+
+    @overload
+    @classmethod
+    def resolve(cls, /, *, number: KvU64) -> Literal[KvNumber.u64]: ...
+
+    @overload
+    @classmethod
+    def resolve(cls, /, *, number: JSBigInt) -> Literal[KvNumber.bigint]: ...  # pyright: ignore[reportOverlappingOverload]
+
+    @overload
+    @classmethod
+    def resolve(cls, /, *, number: float_) -> Literal[KvNumber.float]: ...
+
+    @classmethod
+    def resolve(
+        cls,
+        identifier: KvNumberIdentifier | None = None,
+        *,
+        number: KvU64 | JSBigInt | __builtins__.float | None = None,
+    ) -> LiteralKvNumber:
+        if identifier is not None:
+            return cast(LiteralKvNumber, KvNumber(identifier))
+
+        if number is None:
+            raise TypeError("resolve() missing 1 required argument: 'identifier'")
+        try:
+            return cast(LiteralKvNumber, KvNumber(type(number)))
+        except Exception as e:
+            raise TypeError(
+                f"number is not supported by any KvNumber: {number!r}"
+            ) from e
+
+    @classmethod
+    def _missing_(cls, value: Any) -> KvNumber | None:
+        return cls.__members__.get(value)
+
+    def __lt__(self, other: object) -> bool:
+        if type(other) is KvNumber:
+            self_value: KvNumberInfo[Any, Any, Any] = self.value
+            other_value: KvNumberInfo[Any, Any, Any] = other.value
+            return self_value < other_value
+        return NotImplemented
+
+
+LiteralKvNumber: TypeAlias = Literal[KvNumber.bigint, KvNumber.float, KvNumber.u64]
+KvNumber._value2member_map_[JSBigInt] = KvNumber.bigint
+KvNumber._value2member_map_[float] = KvNumber.float
+# int values correspond to KvNumber (float64) because JavaScript integer values
+# are float64, and v8serialize by default encodes and decodes int values as
+# Number not Bigint (JSBigInt is used for BigInt).
+KvNumber._value2member_map_[int] = KvNumber.float
+KvNumber._value2member_map_[KvU64] = KvNumber.u64
+
+BigIntKvNumberIdentifier = Literal["bigint", KvNumber.bigint] | type[JSBigInt]
+FloatKvNumberIdentifier = Literal["float", KvNumber.float] | type[float]
+U64KvNumberIdentifier = Literal["u64", KvNumber.u64] | type[KvU64]
+KvNumberIdentifier = (
+    BigIntKvNumberIdentifier
+    | FloatKvNumberIdentifier
+    | U64KvNumberIdentifier
+    | KvNumber
+)
+
+
+def encode_v8_number(number: float, /) -> bytes:
+    """Encode a Python float as a JavaScript Number in V8 serialization format."""
+    if not KvNumber.float.value.is_kv_number(number):
+        raise with_notes(
+            TypeError("number must be a float or int in the float-safe range"),
+            f"number: {number!r} ({type(number)})",
+        )
+    wts = WritableTagStream()
+    wts.write_header()
+    # It's OK to pass an int, they'll be encoded as float64
+    wts.write_double(number)
+    return bytes(wts.data)
+
+
+def encode_v8_bigint(number: JSBigInt, /) -> bytes:
+    """Encode a Python JSBigInt as a JavaScript BigInt in V8 serialization format."""
+    if not KvNumber.bigint.value.is_kv_number(number):
+        raise TypeError(f"number must be a JSBigInt, not {type(number)}")
+    wts = WritableTagStream()
+    wts.write_header()
+    wts.write_bigint(number)
+    return bytes(wts.data)
+
+
+@overload
+def encode_kv_write_value(
+    value: KvU64 | bytes | JSBigInt | float, *, v8_encoder: Encoder | None = None
+) -> dp_protobuf.KvValue: ...
+
+
+@overload
+def encode_kv_write_value(
+    value: object, *, v8_encoder: Encoder
+) -> dp_protobuf.KvValue: ...
+
+
+def encode_kv_write_value(
+    value: object, *, v8_encoder: Encoder | None = None
+) -> dp_protobuf.KvValue:
     if isinstance(value, KvU64):
         return dp_protobuf.KvValue(
             data=bytes(value),
@@ -59,130 +774,478 @@ def encode_kv_write_value(value: object, *, v8_encoder: Encoder) -> dp_protobuf.
         return dp_protobuf.KvValue(
             data=value, encoding=dp_protobuf.ValueEncoding.VE_BYTES
         )
+    elif isinstance(value, JSBigInt):
+        return dp_protobuf.KvValue(
+            data=encode_v8_bigint(value), encoding=dp_protobuf.ValueEncoding.VE_V8
+        )
+    elif isinstance(value, float):
+        return dp_protobuf.KvValue(
+            data=encode_v8_number(value), encoding=dp_protobuf.ValueEncoding.VE_V8
+        )
     else:
+        if v8_encoder is None:
+            raise TypeError(
+                "v8_encoder cannot be None when encoding an arbitrary object"
+            )
         return dp_protobuf.KvValue(
             data=bytes(v8_encoder.encode(value)),
             encoding=dp_protobuf.ValueEncoding.VE_V8,
         )
 
 
+class MutationOptions(TypedDict, total=False):
+    expire_at: datetime | None
+
+
+class LimitOptions(Generic[NumberT], TypedDict, total=False):
+    clamp_over: NumberT | None
+    clamp_under: NumberT | None
+    abort_over: NumberT | None
+    abort_under: NumberT | None
+    limit: Limit[NumberT] | None
+
+
+class SumOptions(LimitOptions[NumberT_co], MutationOptions):
+    """Keyword arguments accepted by `sum()`/`Sum()`."""
+
+
+class SumArgs(
+    SumOptions[NumberT], Generic[KvNumberNameT, NumberT, KvNumberTypeT], total=False
+):
+    """All arguments accepted by `sum()`/`Sum()`."""
+
+    key: AnyKvKey
+    delta: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT
+    number_type: (
+        KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT] | KvNumberIdentifier | None
+    )
+
+
 @dataclass
-class PlannedWrite(AtomicWriteRepresentation):
+class PlannedWrite(AtomicWriteRepresentationWriter["CompletedWrite"]):
     kv: KvWriter | None = field(default=None)
-    checks: MutableSequence[AnyKeyVersion] = field(default_factory=list)
-    mutations: MutableSequence[Mutation] = field(default_factory=list)
-    enqueues: MutableSequence[Enqueue] = field(default_factory=list)
+    checks: MutableSequence[CheckRepresentation] = field(default_factory=list)
+    mutations: MutableSequence[MutationRepresentation] = field(default_factory=list)
+    enqueues: MutableSequence[EnqueueRepresentation] = field(default_factory=list)
+    v8_encoder: Encoder | None = field(default=None, kw_only=True)
 
-    async def write(self, kv: KvWriter | None = None) -> CompletedWrite:
-        kv = self.kv if kv is None else kv
-        if kv is None:
-            raise TypeError("No kv was provided to write")
-        return await kv.write(self)
+    @override
+    async def write(
+        self, kv: KvWriter | None = None, *, v8_encoder: Encoder | None = None
+    ) -> CompletedWrite:
+        _kv = self.kv if kv is None else kv
+        if _kv is None:
+            raise TypeError(
+                f"{type(self).__name__}.write() must get a value for its 'kv' "
+                "argument when 'self.kv' isn't set"
+            )
 
-    def as_protobuf(self, *, v8_encoder: Encoder) -> AtomicWrite:
-        return AtomicWrite(
-            checks=[
-                dp_protobuf.Check(
-                    key=pack_key(check.key), versionstamp=check.versionstamp
+        _v8_encoder = self.v8_encoder if v8_encoder is None else v8_encoder
+        if _v8_encoder is None:
+            _v8_encoder = get_v8_encoder(_kv).value_or(None)
+        if _v8_encoder is None:
+            raise TypeError(
+                f"{type(self).__name__}.write() must get a value for its "
+                "'v8_encoder' keyword argument when 'self.v8_encoder' isn't "
+                "set and 'kv' does not provide one."
+            )
+
+        (pb_atomic_write,) = self.as_protobuf(v8_encoder=_v8_encoder)
+        # Copy the write components so that the results are not affected if the
+        # PlannedWrite is modified during this write.
+        checks = tuple(self.checks)
+        mutations = tuple(self.mutations)
+        enqueues = tuple(self.enqueues)
+        result = await _kv.write(protobuf_atomic_write=pb_atomic_write)
+
+        if is_err(result):
+            if isinstance(result.error, CheckFailure):
+                check_failure = result.error
+                return ConflictedWrite(
+                    failed_checks=list(check_failure.failed_check_indexes),
+                    checks=checks,
+                    mutations=mutations,
+                    enqueues=enqueues,
+                    endpoint=check_failure.endpoint,
                 )
-                for check in self.checks
-            ],
-            mutations=[
-                mut.as_protobuf(v8_encoder=v8_encoder) for mut in self.mutations
-            ],
-            enqueues=[enq.as_protobuf(v8_encoder=v8_encoder) for enq in self.enqueues],
+            raise result.error
+
+        versionstamp, endpoint = result.value
+        return CommittedWrite(
+            versionstamp=versionstamp,
+            checks=checks,
+            mutations=mutations,
+            enqueues=enqueues,
+            endpoint=endpoint,
+        )
+
+    def as_protobuf(self, *, v8_encoder: Encoder) -> tuple[AtomicWrite]:
+        return (
+            AtomicWrite(
+                checks=[
+                    pb_msg
+                    for check in self.checks
+                    for pb_msg in check.as_protobuf(v8_encoder=v8_encoder)
+                ],
+                mutations=[
+                    pb_msg
+                    for mut in self.mutations
+                    for pb_msg in mut.as_protobuf(v8_encoder=v8_encoder)
+                ],
+                enqueues=[
+                    pb_msg
+                    for enq in self.enqueues
+                    for pb_msg in enq.as_protobuf(v8_encoder=v8_encoder)
+                ],
+            ),
         )
 
     @overload
     def check(self, key: AnyKvKey, versionstamp: VersionStamp | None) -> Self: ...
 
     @overload
+    def check(self, check: CheckRepresentation, /) -> Self: ...
+
+    @overload
     def check(self, check: AnyKeyVersion, /) -> Self: ...
 
     def check(
-        self, key: AnyKvKey | AnyKeyVersion, versionstamp: VersionStamp | None = None
+        self,
+        key: CheckRepresentation | AnyKeyVersion | AnyKvKey,
+        versionstamp: VersionStamp | None = None,
     ) -> Self:
-        if isinstance(key, AnyKeyVersion):
-            self.checks.append(key)
+        if isinstance(key, CheckRepresentation):
             if versionstamp is not None:
                 raise TypeError(
-                    "versionstamp argument cannot be passed when first argument "
-                    "is check object with a key and versionstamp"
+                    "'versionstamp' argument cannot be set when the first argument "
+                    "to check() is an object with an 'as_protobuf' method"
                 )
+            self.checks.append(key)
+        elif isinstance(key, AnyKeyVersion):
+            if versionstamp is not None:
+                raise TypeError(
+                    "'versionstamp' argument cannot be set when the first argument "
+                    "to check() is an object with 'key' and 'versionstamp' attributes"
+                )
+            self.checks.append(Check(key.key, key.versionstamp))
         else:
             self.checks.append(Check(key, versionstamp))
+        return self
+
+    def check_key_has_version(self, key: AnyKvKey, versionstamp: VersionStamp) -> Self:
+        self.checks.append(Check.for_key_with_version(key, versionstamp))
+        return self
+
+    def check_key_not_set(self, key: AnyKvKey) -> Self:
+        self.checks.append(Check.for_key_not_set(key))
         return self
 
     def set(self, key: AnyKvKey, value: object, *, versioned: bool = False) -> Self:
         return self.mutate(Set(key, value, versioned=versioned))
 
+    # The overloads here have two categories: Firstly overloads based on known
+    # Known KvNumber enum numbers — bigint, float and u64. Secondly,
+    # generic/catch-all for any KvNumberInfo instance.
     @overload
-    def sum(self, sum: Sum, /) -> Self: ...
-
-    @overload
-    def sum(self, key: AnyKvKey, value: KvU64) -> Self: ...
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[SumOptions[int]],
+    ) -> Self: ...
 
     @overload
     def sum(
         self,
         key: AnyKvKey,
-        value: int | float,
-        *,
-        limit_min: int | float | None = None,
-        limit_max: int | float | None = None,
-        limit_exceeded: LimitExceededInput | None = None,
-        limit: Limit | None = None,
+        delta: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[SumOptions[int]],
+    ) -> Self: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: KvU64,
+        number_type: None = None,
+        **options: Unpack[SumOptions[int]],
+    ) -> Self: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: int | KvU64,
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[SumOptions[int]],
+    ) -> Self: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[SumOptions[float]],
+    ) -> Self: ...
+
+    @overload
+    def sum(
+        self,
+        key: AnyKvKey,
+        delta: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[SumOptions[NumberT]],
     ) -> Self: ...
 
     def sum(
         self,
-        key: AnyKvKey | Sum,
-        value: int | float | KvU64 | None = None,
-        *,
-        limit_min: int | float | None = None,
-        limit_max: int | float | None = None,
-        limit_exceeded: LimitExceededInput | None = None,
-        limit: Limit | None = None,
+        key: AnyKvKey,
+        delta: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[SumOptions[NumberT]],
     ) -> Self:
-        if isinstance(key, Sum):
-            if value is not None:
-                raise TypeError("sum() takes no arguments after 'sum'")
-            return self.mutate(key)
+        delta = cast(NumberT | KvNumberTypeT, delta)
+        number_type = cast(
+            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
+        )
+        return self.mutate(Sum(key, delta, number_type, **options))
 
-        if value is None:
-            raise TypeError("sum() missing 1 required positional argument: 'value'")
-        if limit is None:
-            if not (limit_min is None and limit_max is None and limit_exceeded is None):
-                limit = Limit(
-                    min=limit_min, max=limit_max, limit_exceeded=limit_exceeded
-                )
-        else:
-            limit_min = limit.min if limit_min is None else limit_min
-            limit_max = limit.max if limit_max is None else limit_max
-            limit_exceeded = (
-                cast(LimitExceededInput, limit.limit_exceeded)
-                if limit_exceeded is None
-                else limit_exceeded
-            )
-            limit = Limit(limit_min, limit_max, limit_exceeded)
+    def sum_bigint(
+        self,
+        key: AnyKvKey,
+        delta: int | JSBigInt,
+        **options: Unpack[SumOptions[int]],
+    ) -> Self:
+        return self.sum(key, delta, number_type=KvNumber.bigint, **options)
 
-        return self.mutate(Sum(key, value, limit=limit))
+    def sum_float(
+        self,
+        key: AnyKvKey,
+        delta: float,
+        **options: Unpack[SumOptions[float]],
+    ) -> Self:
+        return self.sum(key, delta, number_type=KvNumber.float, **options)
 
-    def min(self, key: AnyKvKey, value: int | KvU64) -> Self:
-        return self.mutate(Min(key, value))
+    def sum_kvu64(
+        self,
+        key: AnyKvKey,
+        delta: int | KvU64,
+        **options: Unpack[SumOptions[int]],
+    ) -> Self:
+        return self.sum(key, delta, number_type=KvNumber.u64, **options)
 
-    def max(self, key: AnyKvKey, value: int | KvU64) -> Self:
-        return self.mutate(Max(key, value))
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: KvU64,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: int | KvU64,
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def min(
+        self,
+        key: AnyKvKey,
+        value: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    def min(
+        self,
+        key: AnyKvKey,
+        value: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> Self:
+        value = cast(NumberT | KvNumberTypeT, value)
+        number_type = cast(
+            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
+        )
+        return self.mutate(Min(key, value, number_type, **options))
+
+    def min_bigint(
+        self,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        **options: Unpack[MutationOptions],
+    ) -> Self:
+        return self.min(key, value, number_type=KvNumber.bigint, **options)
+
+    def min_float(
+        self,
+        key: AnyKvKey,
+        value: float,
+        **options: Unpack[MutationOptions],
+    ) -> Self:
+        return self.min(key, value, number_type=KvNumber.float, **options)
+
+    def min_kvu64(
+        self,
+        key: AnyKvKey,
+        value: int | KvU64,
+        **options: Unpack[MutationOptions],
+    ) -> Self:
+        return self.min(key, value, number_type=KvNumber.u64, **options)
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: KvU64,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: int | KvU64,
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    @overload
+    def max(
+        self,
+        key: AnyKvKey,
+        value: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[MutationOptions],
+    ) -> Self: ...
+
+    def max(
+        self,
+        key: AnyKvKey,
+        value: JSBigInt | float | KvU64 | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> Self:
+        value = cast(NumberT | KvNumberTypeT, value)
+        number_type = cast(
+            KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT], number_type
+        )
+        return self.mutate(Max(key, value, number_type, **options))
+
+    def max_bigint(
+        self,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        **options: Unpack[MutationOptions],
+    ) -> Self:
+        return self.max(key, value, number_type=KvNumber.bigint, **options)
+
+    def max_float(
+        self,
+        key: AnyKvKey,
+        value: float,
+        **options: Unpack[MutationOptions],
+    ) -> Self:
+        return self.max(key, value, number_type=KvNumber.float, **options)
+
+    def max_kvu64(
+        self,
+        key: AnyKvKey,
+        value: int | KvU64,
+        **options: Unpack[MutationOptions],
+    ) -> Self:
+        return self.max(key, value, number_type=KvNumber.u64, **options)
 
     def delete(self, key: AnyKvKey) -> Self:
+        if isinstance(key, Delete):
+            return self.mutate(key)
         return self.mutate(Delete(key))
 
-    def mutate(self, mutation: Mutation) -> Self:
+    def mutate(self, mutation: MutationRepresentation) -> Self:
         self.mutations.append(mutation)
         return self
 
     @overload
     def enqueue(self, enqueue: Enqueue, /) -> Self: ...
+
     @overload
     def enqueue(
         self,
@@ -192,6 +1255,7 @@ class PlannedWrite(AtomicWriteRepresentation):
         retry_delays: Backoff | None = None,
         dead_letter_keys: Sequence[AnyKvKey] | None = None,
     ) -> Self: ...
+
     def enqueue(
         self,
         message: object | Enqueue,
@@ -213,25 +1277,27 @@ class PlannedWrite(AtomicWriteRepresentation):
         return self
 
 
-@dataclass(init=False, **slots_if310())
+@dataclass(init=False, unsafe_hash=True, **slots_if310())
 class ConflictedWrite(FrozenAfterInitDataclass, AnyFailure):
     if TYPE_CHECKING:
 
         def _AnyFailure_marker(self, no_call: Never) -> Never: ...
 
     ok: Literal[False]
-    conflicts: Mapping[AnyKvKey, Check]
+    conflicts: Mapping[AnyKvKey, CheckRepresentation]
     versionstamp: None
-    checks: Sequence[Check]
-    mutations: Sequence[Mutation]
-    enqueues: Sequence[Enqueue]
+    checks: Sequence[CheckRepresentation]
+    mutations: Sequence[MutationRepresentation]
+    enqueues: Sequence[EnqueueRepresentation]
+    endpoint: EndpointInfo
 
     def __init__(
         self,
         failed_checks: Sequence[int],
-        checks: Sequence[Check],
-        mutations: Sequence[Mutation],
-        enqueues: Sequence[Enqueue],
+        checks: Sequence[CheckRepresentation],
+        mutations: Sequence[MutationRepresentation],
+        enqueues: Sequence[EnqueueRepresentation],
+        endpoint: EndpointInfo,
     ) -> None:
         self.ok = False
         try:
@@ -244,27 +1310,40 @@ class ConflictedWrite(FrozenAfterInitDataclass, AnyFailure):
         self.checks = tuple(checks)
         self.mutations = tuple(mutations)
         self.enqueues = tuple(enqueues)
+        self.endpoint = endpoint
+
+    def __repr__(self) -> str:
+        return (
+            f"<{type(self).__name__} "
+            f"NOT APPLIED to {str(self.endpoint.url)!r} with "
+            f"{len(self.conflicts)}/{len(self.checks)} checks CONFLICTING, "
+            f"{len(self.mutations)} mutations, "
+            f"{len(self.enqueues)} enqueues"
+            f">"
+        )
 
 
-@dataclass(init=False, **slots_if310())
+@dataclass(init=False, unsafe_hash=True, **slots_if310())
 class CommittedWrite(FrozenAfterInitDataclass, AnySuccess):
     if TYPE_CHECKING:
 
         def _AnySuccess_marker(self, no_call: Never) -> Never: ...
 
     ok: Literal[True]
-    conflicts: Mapping[KvKey, Check]  # empty
+    conflicts: Mapping[KvKey, CheckRepresentation]  # empty
     versionstamp: VersionStamp
-    checks: Sequence[Check]
-    mutations: Sequence[Mutation]
-    enqueues: Sequence[Enqueue]
+    checks: Sequence[CheckRepresentation]
+    mutations: Sequence[MutationRepresentation]
+    enqueues: Sequence[EnqueueRepresentation]
+    endpoint: EndpointInfo
 
     def __init__(
         self,
         versionstamp: VersionStamp,
-        checks: Sequence[Check],
-        mutations: Sequence[Mutation],
-        enqueues: Sequence[Enqueue],
+        checks: Sequence[CheckRepresentation],
+        mutations: Sequence[MutationRepresentation],
+        enqueues: Sequence[EnqueueRepresentation],
+        endpoint: EndpointInfo,
     ) -> None:
         self.ok = True
         self.conflicts = MappingProxyType({})
@@ -272,6 +1351,17 @@ class CommittedWrite(FrozenAfterInitDataclass, AnySuccess):
         self.checks = tuple(checks)
         self.mutations = tuple(mutations)
         self.enqueues = tuple(enqueues)
+        self.endpoint = endpoint
+
+    def __repr__(self) -> str:
+        return (
+            f"<{type(self).__name__} "
+            f"version 0x{self.versionstamp} to {str(self.endpoint.url)!r} with "
+            f"{len(self.checks)} checks, "
+            f"{len(self.mutations)} mutations, "
+            f"{len(self.enqueues)} enqueues"
+            f">"
+        )
 
 
 CompletedWrite: TypeAlias = Union[CommittedWrite, ConflictedWrite]
@@ -296,28 +1386,79 @@ class AnyKeyVersion(Protocol):
         versionstamp = ...
 
 
+class CheckRepresentation(
+    SingleProtobufMessageRepresentation[dp_protobuf.Check], AnyKeyVersion
+):
+    __slots__ = ()
+
+    # Check never needs an Encoder, so override the signature to make it optional.
+    @override
+    @abstractmethod
+    def as_protobuf(
+        self, *, v8_encoder: Encoder | None = None
+    ) -> tuple[dp_protobuf.Check]: ...
+
+
 @dataclass(frozen=True, **slots_if310())
-class Check(AnyKeyVersion):
+class Check(CheckRepresentation, AnyKeyVersion):
+    """
+    A condition that must hold for a database write operation to be applied.
+
+    By applying checks to a write operation, writes can ensure that the changes
+    they make are changing the existing values they expect. Without appropriate
+    checks, write operations could overwrite another writer's changes to the
+    database.
+
+    Checks are part of Deno KV's
+    [Multi-version concurrency control](https://en.wikipedia.org/wiki/Multiversion_concurrency_control)
+    support.
+    """
+
     key: AnyKvKey
+    """The key that the check applies to."""
     versionstamp: VersionStamp | None
+    """
+    The version that that the key's value must have for the check to succeed.
+
+    `None` means the key must not have a value set for the check to succeed.
+    """
+
+    @classmethod
+    def for_key_with_version(cls, key: AnyKvKey, versionstamp: VersionStamp) -> Self:
+        return cls(key, versionstamp)
+
+    @classmethod
+    def for_key_not_set(cls, key: AnyKvKey) -> Self:
+        return cls(key, versionstamp=None)
+
+    @override
+    def as_protobuf(
+        self, *, v8_encoder: Encoder | None = None
+    ) -> tuple[dp_protobuf.Check]:
+        return (
+            dp_protobuf.Check(key=pack_key(self.key), versionstamp=self.versionstamp),
+        )
+
+
+class MutationRepresentation(ProtobufMessageRepresentation[dp_protobuf.Mutation]):
+    __slots__ = ()
+
+    @abstractmethod
+    def as_protobuf(self, *, v8_encoder: Encoder) -> Sequence[dp_protobuf.Mutation]: ...
 
 
 @dataclass(init=False, **slots_if310())
-class Mutation(FrozenAfterInitDataclass, ABC):
+class Mutation(FrozenAfterInitDataclass, MutationRepresentation):
     key: AnyKvKey
     expire_at: datetime | None
 
-    def __init__(self, key: AnyKvKey, expire_at: datetime | None) -> None:
+    def __init__(self, key: AnyKvKey, **options: Unpack[MutationOptions]) -> None:
         if type(self) is Mutation:
             raise TypeError("cannot create Mutation instances directly")
         self.key = key
-        self.expire_at = expire_at
+        self.expire_at = options.get("expire_at")
 
-    @abstractmethod
-    def as_protobuf(self, *, v8_encoder: Encoder) -> dp_protobuf.Mutation:
-        pass
-
-    def _expire_at_ms(self) -> int:
+    def expire_at_ms(self) -> int:
         return 0 if self.expire_at is None else int(self.expire_at.timestamp() * 1000)
 
 
@@ -338,35 +1479,38 @@ class Set(Mutation):
         self.value = value
         self.versioned = versioned
 
-    def as_protobuf(self, *, v8_encoder: Encoder) -> dp_protobuf.Mutation:
-        return dp_protobuf.Mutation(
-            mutation_type=dp_protobuf.MutationType.M_SET_SUFFIX_VERSIONSTAMPED_KEY
-            if self.versioned
-            else dp_protobuf.MutationType.M_SET,
-            key=pack_key(self.key),
-            value=encode_kv_write_value(self.value, v8_encoder=v8_encoder),
-            expire_at_ms=self._expire_at_ms(),
+    @override
+    def as_protobuf(self, *, v8_encoder: Encoder) -> tuple[dp_protobuf.Mutation]:
+        return (
+            dp_protobuf.Mutation(
+                mutation_type=dp_protobuf.MutationType.M_SET_SUFFIX_VERSIONSTAMPED_KEY
+                if self.versioned
+                else dp_protobuf.MutationType.M_SET,
+                key=pack_key(self.key),
+                value=encode_kv_write_value(self.value, v8_encoder=v8_encoder),
+                expire_at_ms=self.expire_at_ms(),
+            ),
         )
 
 
 class LimitExceededPolicy(EvalEnumRepr, Enum):
-    ERROR = "error"
+    ABORT = "abort"
     CLAMP = "clamp"
     WRAP = "wrap"
 
 
 LimitExceededInput = Literal[
-    "error",
+    "abort",
     "clamp",
-    LimitExceededPolicy.ERROR,
+    LimitExceededPolicy.ABORT,
     LimitExceededPolicy.CLAMP,
 ]
 
 
-@dataclass(init=False, frozen=True, **slots_if310())
-class Limit(Container["int | float"]):
+@dataclass(frozen=True, **slots_if310())
+class Limit(Container[NumberT_co]):
     """
-    A range of numbers used to define the allowed range of Add operations.
+    A range of numbers used to define the allowed range of `Sum` operations.
 
     Examples
     --------
@@ -383,23 +1527,30 @@ class Limit(Container["int | float"]):
     True
     """
 
-    min: int | float | None
-    max: int | float | None
-    limit_exceeded: LimitExceededPolicy
+    min: NumberT_co | None = field(default=None)
+    max: NumberT_co | None = field(default=None)
+    limit_exceeded: LimitExceededPolicy = field(default=LimitExceededPolicy.ABORT)
 
-    def __init__(
-        self,
-        min: int | float | None = None,
-        max: int | float | None = None,
-        limit_exceeded: LimitExceededInput | None = LimitExceededPolicy.ERROR,
-    ) -> None:
-        object.__setattr__(self, "min", min)
-        object.__setattr__(self, "max", max)
-        object.__setattr__(
+    if TYPE_CHECKING:
+        # Customise the init signature to:
+        # - accept string values to init limit_exceeded
+        # - Hide the LimitExceededPolicy.WRAP option from the init signature so
+        #   that using it is a type error. There's no way to use a custom wrap
+        #   limit, only LIMIT_KVU64 is supported.
+        def __init__(
             self,
-            "limit_exceeded",
-            LimitExceededPolicy(limit_exceeded or LimitExceededPolicy.ERROR),
-        )
+            min: NumberT_co | None = None,
+            max: NumberT_co | None = None,
+            limit_exceeded: LimitExceededInput | None = LimitExceededPolicy.ABORT,
+        ) -> None:
+            pass
+
+    def __post_init__(self) -> None:
+        # Support specifying limit_exceeded via the enum's string values.
+        if not isinstance(self.limit_exceeded, LimitExceededPolicy):
+            object.__setattr__(
+                self, "limit_exceeded", LimitExceededPolicy(self.limit_exceeded)
+            )
 
     def __contains__(self, x: object) -> bool:
         if not isinstance(x, (int, float)):
@@ -408,235 +1559,371 @@ class Limit(Container["int | float"]):
             self.max is None or self.max >= x
         )
 
-    def as_protobuf(
-        self,
-        mutation: dp_protobuf.Mutation,
-        *,
-        v8_encoder: Encoder,
-        value_type: type[int | float],
-    ) -> dp_protobuf.Mutation:
-        if value_type not in (int, float):
-            raise TypeError(f"value_type must be int or float: {value_type!r}")
-
-        if self.min is not None:
-            encoded_min = bytes(v8_encoder.encode(self.min))
-            Limit._validate_encoded_type(
-                "min",
-                value=self.min,
-                v8_value=encoded_min,
-                required_encoding=value_type,
-            )
-            mutation.sum_min = encoded_min
-        if self.max is not None:
-            encoded_max = bytes(v8_encoder.encode(self.max))
-            Limit._validate_encoded_type(
-                "max",
-                value=self.max,
-                v8_value=encoded_max,
-                required_encoding=value_type,
-            )
-            mutation.sum_max = encoded_max
-        if self.limit_exceeded is LimitExceededPolicy.CLAMP:
-            mutation.sum_clamp = True
-        return mutation
-
-    @staticmethod
-    def _validate_encoded_type(
-        field: Literal["min", "max"],
-        value: int | float,
-        v8_value: bytes,
-        required_encoding: type[int | float],
-    ) -> None:
-        assert required_encoding in (int, float)
-        try:
-            value_type = _get_number_type(_get_v8_value_tag(v8_value))
-        except ValueError as e:
-            raise RuntimeError(
-                f"Limit.{field} is not None so must encode to BigInt or "
-                f"Number using the configured v8_encoder, but it didn't: "
-                f"value={value}, v8_value={v8_value!r}, error={e}"
-            ) from e
-        if value_type is not required_encoding:
-            raise ValueError(
-                f"Limit.{field} encoded to {_js_type_name(value_type)} ({value_type}) "
-                f"but the parent Sum's value encoded as "
-                f"{_js_type_name(required_encoding)} ({required_encoding}). "
-                "Both must encode to the same JavaScript type. Use int or "
-                "float consistently for both. If a the V8 serializer is "
-                "customised, check how it's encoding int and float values."
-            )
-
-
-def _js_type_name(py_type: type[int | float]) -> Literal["BigInt", "Number"]:
-    return "BigInt" if py_type is int else "Number"
-
 
 LIMIT_KVU64 = Limit(
-    min=0,
-    max=2**64 - 1,
+    min=KvU64.RANGE[0],
+    max=KvU64.RANGE[-1],
     # Not normally allowed by types because only LIMIT_KVU64 can use WRAP.
     limit_exceeded=cast(LimitExceededInput, LimitExceededPolicy.WRAP),
 )
-LIMIT_UNLIMITED = Limit()
+LIMIT_UNLIMITED = Limit[Any]()
+
+
+class AmbiguousNumberWarning(UserWarning):
+    pass
 
 
 @dataclass(init=False, **slots_if310())
-class Sum(Mutation):
-    value: int | float | KvU64
-    limit: Limit = field(default=Limit())
+class NumberMutation(Mutation, Generic[KvNumberNameT_co, NumberT_co, KvNumberTypeT_co]):
+    number_type: KvNumberInfo[KvNumberNameT_co, NumberT_co, KvNumberTypeT_co]
 
     def __init__(
         self,
-        key: AnyKvKey,
-        value: int | float | KvU64,
         *,
-        limit: Limit | None = None,
+        key: AnyKvKey,
         expire_at: datetime | None = None,
+        number_type: KvNumberInfo[KvNumberNameT_co, NumberT_co, KvNumberTypeT_co],
     ) -> None:
-        super(Sum, self).__init__(key, expire_at=expire_at)
+        super(NumberMutation, self).__init__(key, expire_at=expire_at)
+        self.number_type = number_type
 
-        # Only KvU64 supports wrapping on boundary (and this can't be changed).
-        if isinstance(value, KvU64):
-            if limit is not None and limit != LIMIT_KVU64:
-                raise ValueError(
-                    "limit for KvU64 cannot be changed, it must be None or LIMIT_KVU64"
-                )
-            limit = LIMIT_KVU64
+    @classmethod
+    def _resolve_number_value_type(
+        cls,
+        value: JSBigInt | KvU64 | float | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+    ) -> tuple[NumberT, KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]]:
+        resolved_number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        if isinstance(number_type, KvNumberInfo):
+            resolved_number_type = number_type
+        elif number_type is not None:
+            number_identifier: KvNumberIdentifier = number_type
+            resolved_number_type = KvNumber.resolve(number_identifier).value  # pyright: ignore[reportAssignmentType]
         else:
-            if limit is None:
-                limit = LIMIT_UNLIMITED
-            elif limit.limit_exceeded == LimitExceededPolicy.WRAP:
-                raise ValueError(
-                    "limit for JavaScript BigInt or Number cannot be WRAP, it "
-                    "must be ERROR or CLAMP"
-                )
-        assert limit is not None
+            known_number = cast(KvU64 | JSBigInt | float, value)
+            resolved_number_type = KvNumber.resolve(number=known_number).value  # pyright: ignore[reportAssignmentType]
 
-        self.value = value
-        self.limit = limit
+        resolved_value = cast(KvNumberTypeT | NumberT, value)
 
-    def as_protobuf(self, *, v8_encoder: Encoder) -> dp_protobuf.Mutation:
-        mutation = dp_protobuf.Mutation(
-            mutation_type=dp_protobuf.MutationType.M_SUM,
-            key=pack_key(self.key),
-            value=encode_kv_write_value(self.value, v8_encoder=v8_encoder),
-            expire_at_ms=self._expire_at_ms(),
+        return (
+            resolved_number_type.as_py_number(resolved_value),
+            resolved_number_type,
         )
 
-        v8_number_type = _validate_number_mutation_value(self, mutation)
-        if v8_number_type is not None:
-            assert mutation.value.encoding == dp_protobuf.ValueEncoding.VE_V8
-            # Only V8 values use the min/max limits.
-            self.limit.as_protobuf(
-                mutation, v8_encoder=v8_encoder, value_type=v8_number_type
+
+@dataclass(init=False, **slots_if310())
+class Sum(NumberMutation[KvNumberNameT_co, NumberT_co, KvNumberTypeT_co]):
+    _INIT_OPTIONS: ClassVar = frozenset(
+        ["clamp_over", "clamp_under", "abort_over", "abort_under", "limit", "expire_at"]
+    )
+    delta: Final[NumberT_co]  # type: ignore[misc]
+    limit: Final[Limit[NumberT_co]]  # type: ignore[misc]
+
+    @override
+    def as_protobuf(
+        self, *, v8_encoder: Encoder | None = None
+    ) -> Sequence[dp_protobuf.Mutation]:
+        return self.number_type.get_sum_mutations(self, v8_encoder=v8_encoder)
+
+    @overload
+    def __init__(  # pyright: ignore[reportOverlappingOverload]
+        self: BigIntSum,
+        key: AnyKvKey,
+        delta: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[SumOptions[int]],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: BigIntSum,
+        key: AnyKvKey,
+        delta: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[SumOptions[int]],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: U64Sum,
+        key: AnyKvKey,
+        delta: KvU64,
+        number_type: None = None,
+        **options: Unpack[SumOptions[int]],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: U64Sum,
+        key: AnyKvKey,
+        delta: int | KvU64,
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[SumOptions[int]],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: FloatSum,
+        key: AnyKvKey,
+        delta: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[SumOptions[float]],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: Sum[KvNumberNameT, NumberT, KvNumberTypeT],
+        key: AnyKvKey,
+        delta: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[SumOptions[NumberT]],
+    ) -> None: ...
+
+    def __init__(
+        self: Sum[KvNumberNameT, NumberT, KvNumberTypeT],
+        key: AnyKvKey,
+        delta: JSBigInt | KvU64 | float | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[SumOptions[int | float | NumberT]],
+    ) -> None:
+        if options.keys() - self._INIT_OPTIONS:
+            arg = next(iter(options.keys() - self._INIT_OPTIONS))
+            raise TypeError(
+                f"Sum.__init__() got an unexpected keyword argument {arg!r}"
+            )
+        resolved_delta, resolved_number_type = Sum._resolve_number_value_type(
+            delta, number_type
+        )
+        super(Sum, self).__init__(
+            key=key,
+            expire_at=options.pop("expire_at", None),
+            number_type=resolved_number_type,
+        )
+        self.limit = (
+            Sum._create_limit(**cast(LimitOptions[NumberT], options))
+            or resolved_number_type.default_limit
+        )
+        resolved_number_type.validate_limit(self.limit)
+        self.delta = resolved_delta
+
+    @classmethod
+    def _create_limit(
+        cls, **options: Unpack[LimitOptions[NumberT]]
+    ) -> Limit[NumberT] | None:
+        limits = dict[Literal["limit=", "clamp_*=", "abort_*="], Limit[NumberT]]()
+
+        if limit := options.get("limit"):
+            limits["limit="] = limit
+
+        if "clamp_under" in options or "clamp_over" in options:
+            limits["clamp_*="] = Limit(
+                min=options.get("clamp_under"),
+                max=options.get("clamp_over"),
+                limit_exceeded=LimitExceededPolicy.CLAMP,
             )
 
-        return mutation
+        if "abort_under" in options or "abort_over" in options:
+            limits["abort_*="] = Limit(
+                min=options.get("abort_under"),
+                max=options.get("abort_over"),
+                limit_exceeded=LimitExceededPolicy.ABORT,
+            )
+
+        if len(limits) > 1:
+            options_used = ", ".join(sorted(limits))
+            raise with_notes(
+                ValueError(
+                    f"Limit keyword arguments in conflict: "
+                    f"Options {options_used} cannot be used together."
+                ),
+                "Use limit=Limit(limit_exceeded=..., ...) to create a limit "
+                "with a dynamic type.",
+            )
+        return next(iter(limits.values()), None)
 
 
-def _validate_number_mutation_value(
-    mut: Sum | Min | Max, mutation: dp_protobuf.Mutation
-) -> type[int | float] | None:
-    """
-    Validate the encoded numeric value of a Sum/Min/Max mutation operation.
-
-    If the operation value is a V8-encoded number, the return value is the int
-    or float type, indicating if the encoded value is BigInt or Number.
-    Otherwise the return value is None.
-    """
-    if mutation.value.encoding == dp_protobuf.ValueEncoding.VE_LE64:
-        return None
-    elif mutation.value.encoding == dp_protobuf.ValueEncoding.VE_V8:
-        try:
-            value_type = _get_number_type(_get_v8_value_tag(mutation.value.data))
-        except ValueError as e:
-            raise RuntimeError(
-                f"{type(mut).__name__}.value is not KvU64 so it must encode to "
-                f"BigInt or Number using the configured v8_encoder, but it didn't: "
-                f"value={mut.value!r}, v8_value={mutation.value.data!r}, error={e}"
-            ) from e
-
-        return value_type
-
-    raise ValueError(
-        f"{type(mut).__name__}.value is not a KvU64 or number that "
-        f"V8-serializes to BigInt or Number: value={mut.value!r}, ValueEncoding: "
-        f"{enum_name(dp_protobuf.ValueEncoding, mutation.value.encoding)}"
-    )
+BigIntSum: TypeAlias = Sum[Literal["bigint"], int, JSBigInt]
+FloatSum: TypeAlias = Sum[Literal["float"], float, float]
+U64Sum: TypeAlias = Sum[Literal["u64"], int, KvU64]
 
 
-def _get_v8_value_tag(v8_value: bytes) -> SerializationTag:
-    """Inspect a V8-serialized value to determine the type of value it holds."""
-    try:
-        rts = ReadableTagStream(v8_value)
-        rts.read_header()
-        return rts.read_tag()
-    except v8serialize.V8SerializeError as e:
-        raise ValueError("v8_value bytes does not contain a V8-encoded value") from e
+@dataclass(init=False, **slots_if310())
+class Min(NumberMutation[KvNumberNameT_co, NumberT_co, KvNumberTypeT_co]):
+    value: Final[NumberT_co]  # type: ignore[misc]
 
+    @overload
+    def __init__(  # pyright: ignore[reportOverlappingOverload]
+        self: BigIntMin,
+        key: AnyKvKey,
+        value: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
 
-def _get_number_type(tag: SerializationTag) -> type[int | float]:
-    """Determine the JS number type of a V8-serialized value type tag."""
-    if tag is SerializationTag.kBigInt or tag is SerializationTag.kBigIntObject:
-        return int
-    elif tag in {
-        SerializationTag.kNumberObject,
-        SerializationTag.kDouble,
-        SerializationTag.kInt32,
-        SerializationTag.kUint32,
-    }:
-        return float
-    raise ValueError(f"tag is not a BigInt or Number: {tag}")
-
-
-@dataclass(**slots_if310())
-class Min(Mutation):
-    value: KvU64
-
+    @overload
     def __init__(
-        self,
+        self: BigIntMin,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: U64Min,
+        key: AnyKvKey,
+        value: KvU64,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: U64Min,
         key: AnyKvKey,
         value: int | KvU64,
-        *,
-        expire_at: datetime | None = None,
-    ) -> None:
-        super(Min, self).__init__(key, expire_at=expire_at)
-        self.value = value if isinstance(value, KvU64) else KvU64(value)
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
 
-    def as_protobuf(self, *, v8_encoder: Encoder) -> dp_protobuf.Mutation:
-        mutation = dp_protobuf.Mutation(
-            mutation_type=dp_protobuf.MutationType.M_MIN,
-            key=pack_key(self.key),
-            value=encode_kv_write_value(self.value, v8_encoder=v8_encoder),
-            expire_at_ms=self._expire_at_ms(),
-        )
-        _validate_number_mutation_value(self, mutation)
-        return mutation
+    @overload
+    def __init__(
+        self: FloatMin,
+        key: AnyKvKey,
+        value: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
 
-
-@dataclass(**slots_if310())
-class Max(Mutation):
-    value: int | float | KvU64
+    @overload
+    def __init__(
+        self: Min[KvNumberNameT, NumberT, KvNumberTypeT],
+        key: AnyKvKey,
+        value: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
 
     def __init__(
-        self,
+        self: Min[KvNumberNameT, NumberT, KvNumberTypeT],
+        key: AnyKvKey,
+        value: JSBigInt | KvU64 | float | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> None:
+        resolved_number, resolved_number_type = Min._resolve_number_value_type(
+            value, number_type
+        )
+        super(Min, self).__init__(key=key, number_type=resolved_number_type, **options)
+        self.value = resolved_number
+
+    @override
+    def as_protobuf(self, *, v8_encoder: Encoder) -> Sequence[dp_protobuf.Mutation]:
+        return self.number_type.get_min_mutations(self, v8_encoder=v8_encoder)
+
+
+BigIntMin: TypeAlias = Min[Literal["bigint"], int, JSBigInt]
+FloatMin: TypeAlias = Min[Literal["float"], float, float]
+U64Min: TypeAlias = Min[Literal["u64"], int, KvU64]
+
+
+@dataclass(init=False, **slots_if310())
+class Max(NumberMutation[KvNumberNameT_co, NumberT_co, KvNumberTypeT_co]):
+    value: Final[NumberT_co]  # type: ignore[misc]
+
+    @overload
+    def __init__(  # pyright: ignore[reportOverlappingOverload]
+        self: BigIntMax,
+        key: AnyKvKey,
+        value: JSBigInt,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: BigIntMax,
+        key: AnyKvKey,
+        value: int | JSBigInt,
+        number_type: BigIntKvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: U64Max,
+        key: AnyKvKey,
+        value: KvU64,
+        number_type: None = None,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: U64Max,
         key: AnyKvKey,
         value: int | KvU64,
-        *,
-        expire_at: datetime | None = None,
-    ) -> None:
-        super(Max, self).__init__(key, expire_at=expire_at)
-        self.value = value if isinstance(value, KvU64) else KvU64(value)
+        number_type: U64KvNumberIdentifier,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
 
-    def as_protobuf(self, *, v8_encoder: Encoder) -> dp_protobuf.Mutation:
-        mutation = dp_protobuf.Mutation(
-            mutation_type=dp_protobuf.MutationType.M_MAX,
-            key=pack_key(self.key),
-            value=encode_kv_write_value(self.value, v8_encoder=v8_encoder),
-            expire_at_ms=self._expire_at_ms(),
+    @overload
+    def __init__(
+        self: FloatMax,
+        key: AnyKvKey,
+        value: float,
+        number_type: FloatKvNumberIdentifier | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: Max[KvNumberNameT, NumberT, KvNumberTypeT],
+        key: AnyKvKey,
+        value: NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT],
+        # Can't use float limits unless the float type is explicitly being used,
+        # as float is incompatible with the other number types, but int is
+        # compatible.
+        **options: Unpack[MutationOptions],
+    ) -> None: ...
+
+    def __init__(
+        self: Max[KvNumberNameT, NumberT, KvNumberTypeT],
+        key: AnyKvKey,
+        value: JSBigInt | KvU64 | float | NumberT | KvNumberTypeT,
+        number_type: KvNumberInfo[KvNumberNameT, NumberT, KvNumberTypeT]
+        | KvNumberIdentifier
+        | None = None,
+        **options: Unpack[MutationOptions],
+    ) -> None:
+        resolved_number, resolved_number_type = Max._resolve_number_value_type(
+            value, number_type
         )
-        _validate_number_mutation_value(self, mutation)
-        return mutation
+        super(Max, self).__init__(key=key, number_type=resolved_number_type, **options)
+        self.value = resolved_number
+
+    @override
+    def as_protobuf(self, *, v8_encoder: Encoder) -> Sequence[dp_protobuf.Mutation]:
+        return self.number_type.get_max_mutations(self, v8_encoder=v8_encoder)
+
+
+BigIntMax: TypeAlias = Max[Literal["bigint"], int, JSBigInt]
+FloatMax: TypeAlias = Max[Literal["float"], float, float]
+U64Max: TypeAlias = Max[Literal["u64"], int, KvU64]
 
 
 @dataclass(**slots_if310())
@@ -644,9 +1931,14 @@ class Delete(Mutation):
     def __init__(self, key: AnyKvKey) -> None:
         super(Delete, self).__init__(key, expire_at=None)
 
-    def as_protobuf(self, *, v8_encoder: Encoder | None = None) -> dp_protobuf.Mutation:
-        return dp_protobuf.Mutation(
-            mutation_type=dp_protobuf.MutationType.M_DELETE, key=pack_key(self.key)
+    @override
+    def as_protobuf(
+        self, *, v8_encoder: Encoder | None = None
+    ) -> tuple[dp_protobuf.Mutation]:
+        return (
+            dp_protobuf.Mutation(
+                mutation_type=dp_protobuf.MutationType.M_DELETE, key=pack_key(self.key)
+            ),
         )
 
 
@@ -656,8 +1948,12 @@ DEFAULT_ENQUEUE_RETRY_DELAYS = ExponentialBackoff(
 DEFAULT_ENQUEUE_RETRY_DELAY_COUNT = 10
 
 
+class EnqueueRepresentation(SingleProtobufMessageRepresentation[dp_protobuf.Enqueue]):
+    __slots__ = ()
+
+
 @dataclass(init=False, **slots_if310())
-class Enqueue(FrozenAfterInitDataclass):
+class Enqueue(FrozenAfterInitDataclass, EnqueueRepresentation):
     """
     A message to be async-delivered to a Deno app listening to the Kv's queue.
 
@@ -704,15 +2000,18 @@ class Enqueue(FrozenAfterInitDataclass):
         )
         self.dead_letter_keys = () if dead_letter_keys is None else dead_letter_keys
 
-    def as_protobuf(self, *, v8_encoder: Encoder) -> dp_protobuf.Enqueue:
+    @override
+    def as_protobuf(self, *, v8_encoder: Encoder) -> tuple[dp_protobuf.Enqueue]:
         deadline_ms = None
         if self.delivery_time is not None:
             deadline_ms = int(self.delivery_time.timestamp() * 1000)
-        return dp_protobuf.Enqueue(
-            payload=bytes(v8_encoder.encode(self.message)),
-            keys_if_undelivered=[pack_key(k) for k in self.dead_letter_keys],
-            deadline_ms=deadline_ms,
-            backoff_schedule=self._evaluate_backoff_schedule(),
+        return (
+            dp_protobuf.Enqueue(
+                payload=bytes(v8_encoder.encode(self.message)),
+                keys_if_undelivered=[pack_key(k) for k in self.dead_letter_keys],
+                deadline_ms=deadline_ms,
+                backoff_schedule=self._evaluate_backoff_schedule(),
+            ),
         )
 
     def _evaluate_backoff_schedule(self) -> Sequence[int]:

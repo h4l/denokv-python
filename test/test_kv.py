@@ -28,6 +28,7 @@ from hypothesis import given
 from hypothesis import settings
 from hypothesis import strategies as st
 from v8serialize import Decoder
+from v8serialize.jstypes import JSBigInt
 from v8serialize.jstypes import JSMap
 from yarl import URL
 
@@ -42,8 +43,9 @@ from denokv._kv_values import KvEntry
 from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
 from denokv._kv_writes import DEFAULT_ENQUEUE_RETRY_DELAY_COUNT
+from denokv._kv_writes import LIMIT_KVU64
 from denokv._kv_writes import Limit
-from denokv._kv_writes import LimitExceededPolicy
+from denokv._kv_writes import SumArgs
 from denokv._pycompat.enum import StrEnum
 from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import AsyncGenerator
@@ -333,7 +335,7 @@ def client_session(client: TestClient) -> aiohttp.ClientSession:
     return client.session
 
 
-@pytest.fixture(params=[1, 2, 3])
+@pytest.fixture(params=[1, 2, 3], ids=lambda v: f"datapath_v{v}")
 def datapath_version(request: pytest.FixtureRequest) -> Literal[1, 2, 3]:
     assert request.param in (1, 2, 3)
     return cast(Literal[1, 2, 3], request.param)
@@ -1040,39 +1042,42 @@ _params_test_Kv_write__sum = pytest.mark.parametrize(
     "initial_val, sum_val, sum_kwargs, result",
     [
         (12, 3, {}, 15),
+        (12, 3.5, {}, 15.5),
+        (JSBigInt(12), JSBigInt(3), {}, JSBigInt(15)),
         (12, -3, {}, 9),
+        (12, -3.5, {}, 8.5),
+        (JSBigInt(12), JSBigInt(-3), {}, JSBigInt(9)),
         (None, 3, {}, 3),
-        (12.5, 2.5, {}, 15.0),
-        (12.5, -2.5, {}, 10.0),
+        (12.5, 2.5, {}, 15),
+        (12.5, -2.5, {}, 10),
         (None, 2.5, {}, 2.5),
         (None, -2.5, {}, -2.5),
         (KvU64(12), KvU64(3), {}, KvU64(15)),
-        (KvU64(12), 3, {}, KvU64(15)),
-        (KvU64(12), -3, {}, KvU64(9)),
+        (KvU64(12), 3, SumArgs(number_type='u64'), KvU64(15)),
+        (KvU64(12), -3, SumArgs(number_type='u64'), KvU64(9)),
         (None, KvU64(3), {}, KvU64(3)),
         # KvU64 wraps on overflow
-        (KvU64(1), -3, {}, KvU64(2**64 - 2)),
-        (KvU64(2**64 - 2), 3, {}, KvU64(1)),
+        (KvU64(1), -3, SumArgs(number_type='u64'), KvU64(2**64 - 2)),
+        (KvU64(2**64 - 2), 3, SumArgs(number_type='u64'), KvU64(1)),
         # Limits
-        (12, 10, dict(limit_min=10, limit_max=20, limit_exceeded="clamp"), 20),
-        (12, -10, dict(limit_min=10, limit_max=20, limit_exceeded="clamp"), 10),
-        (12.0, 10.0, dict(limit_min=10.0, limit_max=20.0, limit_exceeded="clamp"), 20.0),  # noqa: E501
-        (12.0, -10.0, dict(limit_min=10.0, limit_max=20.0, limit_exceeded="clamp"), 10.0), # noqa: E501
+        (JSBigInt(12), JSBigInt(10), SumArgs(clamp_under=10, clamp_over=20), JSBigInt(20)),  # noqa: E501
+        (JSBigInt(12), JSBigInt(-10), SumArgs(clamp_under=10, clamp_over=20), JSBigInt(10)),  # noqa: E501
+        (12.0, 10.0, SumArgs(clamp_under=10.0, clamp_over=20.0), 20),
+        (12.0, -10.0, SumArgs(clamp_under=10.0, clamp_over=20.0), 10),
+        (KvU64(12), KvU64(10), SumArgs(clamp_under=10, clamp_over=20), KvU64(20)),
+        (KvU64(12), -10, SumArgs(number_type='u64', clamp_under=10, clamp_over=20), KvU64(10)),  # noqa: E501
         # limit via Limit object
-        (12, -10, dict(limit=Limit(10, 20, 'clamp')), 10),
-        # kwargs override the limit object fields
-        (12, 10, dict(limit=Limit(9, 21, 'error'), limit_min=10, limit_max=20, limit_exceeded='clamp'), 20),   # noqa: E501
-        (12, -10, dict(limit=Limit(9, 21, 'error'), limit_min=10, limit_max=20, limit_exceeded='clamp'), 10),  # noqa: E501
+        (12, -10, SumArgs(limit=Limit(10, 20, 'clamp')), 10),
         # overflow with limit_exceeded error causes write to fail with client error
-        pytest.param(12,   10,    dict(limit_min=10,   limit_max=20,   limit_exceeded="error"), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-high-BigInt'),  # noqa: E501
-        pytest.param(12,   -10,   dict(limit_min=10,   limit_max=20,   limit_exceeded="error"), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-low-BigInt'),   # noqa: E501
-        pytest.param(12.0, 10.0,  dict(limit_min=10.0, limit_max=20.0, limit_exceeded="error"), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-high-Number'),  # noqa: E501
-        pytest.param(12.0, -10.0, dict(limit_min=10.0, limit_max=20.0, limit_exceeded="error"), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-low-Number'),   # noqa: E501
+        pytest.param(12,   10,    SumArgs(abort_under=10,   abort_over=20   ), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-high-BigInt'),  # noqa: E501
+        pytest.param(12,   -10,   SumArgs(abort_under=10,   abort_over=20   ), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-low-BigInt'),   # noqa: E501
+        pytest.param(12.0, 10.0,  SumArgs(abort_under=10.0, abort_over=20.0 ), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-high-Number'),  # noqa: E501
+        pytest.param(12.0, -10.0, SumArgs(abort_under=10.0, abort_over=20.0 ), match_client_error("Mutation is not a valid M_SUM operation"), id='err-limit-low-Number'),   # noqa: E501
         # Cannot use limit_exceeded other than wrap for KvU64
-        pytest.param(KvU64(12), KvU64(1), dict(limit_exceeded="error"), lambda e: isinstance(e, ValueError) and "limit for KvU64 cannot be changed, it must be None or LIMIT_KVU64" == str(e), id='err-invalid-exceeded-KvU64'),  # noqa: E501
+        pytest.param(KvU64(12), KvU64(1), SumArgs(abort_over=100), lambda e: isinstance(e, ValueError) and "Number type 'u64' does not support abort limits" == str(e), id='err-invalid-exceeded-KvU64'),  # noqa: E501
         # Cannot use limit_exceeded wrap for BigInt/Number
-        pytest.param(1,   1,   dict(limit_exceeded=LimitExceededPolicy.WRAP), match_error(ValueError, "limit for JavaScript BigInt or Number cannot be WRAP, it must be ERROR or CLAMP"), id='err-invalid-exceeded-BigInt'),  # noqa: E501
-        pytest.param(1.0, 1.0, dict(limit_exceeded=LimitExceededPolicy.WRAP), match_error(ValueError, "limit for JavaScript BigInt or Number cannot be WRAP, it must be ERROR or CLAMP"), id='err-invalid-exceeded-Number'),  # noqa: E501
+        pytest.param(1,   JSBigInt(1),   SumArgs(limit=LIMIT_KVU64), match_error(ValueError, "Number type 'bigint' does not support wrap limits"), id='err-invalid-exceeded-BigInt'),  # noqa: E501
+        pytest.param(1.0, 1.0, SumArgs(limit=LIMIT_KVU64), match_error(ValueError, "Number type 'float' does not support wrap limits"), id='err-invalid-exceeded-Number'),  # noqa: E501
     ],
 )
 # fmt: on
@@ -1080,27 +1085,75 @@ _params_test_Kv_write__sum = pytest.mark.parametrize(
 @pytest_mark_asyncio
 async def test_Kv_write__sum(
     kv: Kv,
-    initial_val: int | float | KvU64 | None,
-    sum_val: int | float | KvU64,
-    sum_kwargs: dict[str, Any],
+    initial_val: int | float | JSBigInt | KvU64 | None,
+    sum_val: int | float | JSBigInt | KvU64,
+    sum_kwargs: SumArgs[Any, Any, Any],
     result: int | float | KvU64 | Callable[[Exception], bool],
 ) -> None:
     async with validate_write_outcome(kv, initial_val, result) as (kv, key):
-        assert is_ok(await kv.atomic().sum(key, sum_val, **sum_kwargs).write())
+        sum_args = SumArgs(key=key, delta=sum_val, **sum_kwargs)
+        assert is_ok(await kv.atomic().sum(**sum_args).write())  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
     "initial_val, max_val, max_kwargs, result",
     [
+        (JSBigInt(12), JSBigInt(3), {}, JSBigInt(12)),
+        (JSBigInt(3), JSBigInt(12), {}, JSBigInt(12)),
+        (12.5, 3, {}, 12.5),
+        (3, 12.5, {}, 12.5),
         (KvU64(12), KvU64(3), {}, KvU64(12)),
         (KvU64(3), KvU64(12), {}, KvU64(12)),
-        # Cannot use max() on non KvU64 stored value
-        (3, KvU64(12), {}, match_client_error("SnapshotWrite is not valid")),
+        (
+            JSBigInt(1),
+            2.0,
+            {},
+            # The errors reference M_SUM because bigint/number implement min/max
+            # using clamped M_SUM operations, not the actual M_MIN/M_MAX,
+            # because they only support u64.
+            match_error(
+                ResponseUnsuccessful,
+                "SnapshotWrite is not valid: "
+                "Cannot apply operation M_SUM, number types are incompatible: "
+                "current type: JSBigInt (VE_V8 BigInt), "
+                "operand type: int/float (VE_V8 Number)",
+            ),
+        ),
+        (
+            1.5,
+            JSBigInt(2),
+            {},
+            match_error(
+                ResponseUnsuccessful,
+                "SnapshotWrite is not valid: "
+                "Cannot apply operation M_SUM, number types are incompatible: "
+                "current type: int/float (VE_V8 Number), "
+                "operand type: JSBigInt (VE_V8 BigInt)",
+            ),
+        ),
         (
             KvU64(1),
             2.0,
             {},
-            match_error(TypeError, "value must be 8 bytes or a 64-bit unsigned int"),
+            match_error(
+                ResponseUnsuccessful,
+                "SnapshotWrite is not valid: "
+                "Cannot apply operation M_SUM, number types are incompatible: "
+                "current type: KvU64 (VE_LE64), "
+                "operand type: int/float (VE_V8 Number)",
+            ),
+        ),
+        (
+            2.0,
+            KvU64(1),
+            {},
+            match_error(
+                ResponseUnsuccessful,
+                "SnapshotWrite is not valid: "
+                "Cannot apply operation M_MAX, number types are incompatible: "
+                "current type: int/float (VE_V8 Number), "
+                "operand type: KvU64 (VE_LE64)",
+            ),
         ),
     ],
 )
@@ -1119,15 +1172,62 @@ async def test_Kv_write__max(
 @pytest.mark.parametrize(
     "initial_val, min_val, min_kwargs, result",
     [
+        (JSBigInt(12), JSBigInt(3), {}, JSBigInt(3)),
+        (JSBigInt(3), JSBigInt(12), {}, JSBigInt(3)),
+        (12, 3.1, {}, 3.1),
+        (3.1, 12, {}, 3.1),
         (KvU64(12), KvU64(3), {}, KvU64(3)),
         (KvU64(3), KvU64(12), {}, KvU64(3)),
-        # Cannot use min() on non KvU64 stored value
-        (3, KvU64(12), {}, match_client_error("SnapshotWrite is not valid")),
+        (
+            JSBigInt(1),
+            2.0,
+            {},
+            # The errors reference M_SUM because bigint/number implement min/max
+            # using clamped M_SUM operations, not the actual M_MIN/M_MAX,
+            # because they only support u64.
+            match_error(
+                ResponseUnsuccessful,
+                "SnapshotWrite is not valid: "
+                "Cannot apply operation M_SUM, number types are incompatible: "
+                "current type: JSBigInt (VE_V8 BigInt), "
+                "operand type: int/float (VE_V8 Number)",
+            ),
+        ),
+        (
+            1.5,
+            JSBigInt(2),
+            {},
+            match_error(
+                ResponseUnsuccessful,
+                "SnapshotWrite is not valid: "
+                "Cannot apply operation M_SUM, number types are incompatible: "
+                "current type: int/float (VE_V8 Number), "
+                "operand type: JSBigInt (VE_V8 BigInt)",
+            ),
+        ),
         (
             KvU64(1),
             2.0,
             {},
-            match_error(TypeError, "value must be 8 bytes or a 64-bit unsigned int"),
+            match_error(
+                ResponseUnsuccessful,
+                "SnapshotWrite is not valid: "
+                "Cannot apply operation M_SUM, number types are incompatible: "
+                "current type: KvU64 (VE_LE64), "
+                "operand type: int/float (VE_V8 Number)",
+            ),
+        ),
+        (
+            2.0,
+            KvU64(1),
+            {},
+            match_error(
+                ResponseUnsuccessful,
+                "SnapshotWrite is not valid: "
+                "Cannot apply operation M_MIN, number types are incompatible: "
+                "current type: int/float (VE_V8 Number), "
+                "operand type: KvU64 (VE_LE64)",
+            ),
         ),
     ],
 )

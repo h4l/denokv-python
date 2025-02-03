@@ -221,6 +221,10 @@ class MockKvDbMessage(NamedTuple):
     backoff_schedule: Sequence[int]
 
 
+class SumLimitExceeded(ValueError):
+    pass
+
+
 @dataclass
 class MockKvDb:
     entries: list[MockKvDbEntry]
@@ -527,7 +531,7 @@ def _get_number_operator(
                 "Mutation used different number types for value/sum_min/sum_max"
             )
         boundary = (
-            LimitExceededPolicy.CLAMP if mut.sum_clamp else LimitExceededPolicy.ERROR
+            LimitExceededPolicy.CLAMP if mut.sum_clamp else LimitExceededPolicy.ABORT
         )
         return MutationSumOperator(min=min_, max=max_, boundary=boundary)
     elif mut.mutation_type == MutationType.M_MAX:
@@ -556,8 +560,8 @@ class MutationSumOperator:
             if self.boundary is LimitExceededPolicy.CLAMP:
                 result = min
             else:
-                assert self.boundary is LimitExceededPolicy.ERROR
-                raise ValueError(
+                assert self.boundary is LimitExceededPolicy.ABORT
+                raise SumLimitExceeded(
                     f"result of sum({left}, {right}) = {result}, which is less "
                     f"than the minimum {min}"
                 )
@@ -565,8 +569,8 @@ class MutationSumOperator:
             if self.boundary is LimitExceededPolicy.CLAMP:
                 result = max
             else:
-                assert self.boundary is LimitExceededPolicy.ERROR
-                raise ValueError(
+                assert self.boundary is LimitExceededPolicy.ABORT
+                raise SumLimitExceeded(
                     f"result of sum({left}, {right}) = {result}, which is "
                     f"greater than the maximum {max}"
                 )

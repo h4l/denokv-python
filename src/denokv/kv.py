@@ -11,6 +11,7 @@ from enum import Flag
 from enum import auto
 from functools import partial
 from os import environ
+from types import EllipsisType
 from types import TracebackType
 from typing import Literal
 from typing import overload
@@ -27,13 +28,15 @@ from denokv import datapath
 from denokv._datapath_pb2 import AtomicWrite
 from denokv._datapath_pb2 import SnapshotRead
 from denokv._datapath_pb2 import SnapshotReadOutput
+from denokv._kv_types import AtomicWriteRepresentationWriter
+from denokv._kv_types import KvWriter
+from denokv._kv_types import KvWriterWriteResult
+from denokv._kv_types import WriteResultT
 from denokv._kv_values import KvEntry
 from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
 from denokv._kv_writes import Check
-from denokv._kv_writes import CommittedWrite
 from denokv._kv_writes import CompletedWrite
-from denokv._kv_writes import ConflictedWrite
 from denokv._kv_writes import Enqueue
 from denokv._kv_writes import Mutation
 from denokv._kv_writes import PlannedWrite
@@ -366,7 +369,7 @@ DEFAULT_KV_FLAGS: Final = KvFlags.IntAsNumber
 
 
 @dataclass(init=False)
-class Kv(AbstractAsyncContextManager["Kv", None]):
+class Kv(KvWriter, AbstractAsyncContextManager["Kv", None]):
     """
     Interface to perform requests against a Deno KV database.
 
@@ -719,11 +722,20 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
             partial(datapath.snapshot_read, read=read), consistency=consistency
         )
 
+    @staticmethod
+    def _parse_versionstamp(
+        value: tuple[bytes, EndpointInfo],
+    ) -> tuple[VersionStamp, EndpointInfo]:
+        raw_versionstamp, endpoint = value
+        return VersionStamp(raw_versionstamp), endpoint
+
     async def _atomic_write(self, write: AtomicWrite) -> _KvAtomicWriteResult:
-        return await self._datapath_request(
-            partial(datapath.atomic_write, write=write),
-            consistency=ConsistencyLevel.STRONG,
-        )
+        return (
+            await self._datapath_request(
+                partial(datapath.atomic_write, write=write),
+                consistency=ConsistencyLevel.STRONG,
+            )
+        ).map(self._parse_versionstamp)
 
     async def _datapath_request(
         self,
@@ -787,58 +799,61 @@ class Kv(AbstractAsyncContextManager["Kv", None]):
     @overload
     async def write(self, planned_write: PlannedWrite, /) -> CompletedWrite: ...
 
+    @overload
     async def write(
-        self, arg: PlannedWrite | WriteOperation | None = None, *args: WriteOperation
-    ) -> CompletedWrite:
-        if arg is None:
+        self, atomic_write: AtomicWriteRepresentationWriter[WriteResultT], /
+    ) -> WriteResultT: ...
+
+    @overload
+    async def write(
+        self, *, protobuf_atomic_write: dp_protobuf.AtomicWrite
+    ) -> KvWriterWriteResult: ...
+
+    @override
+    async def write(
+        self,
+        arg: AtomicWriteRepresentationWriter[WriteResultT]
+        | WriteOperation
+        | EllipsisType = ...,  # ... is a sentinel to detect 0 args
+        *args: WriteOperation,
+        protobuf_atomic_write: dp_protobuf.AtomicWrite | None = None,
+    ) -> CompletedWrite | WriteResultT | KvWriterWriteResult:
+        if protobuf_atomic_write is not None:
+            if arg is not ... or len(args) > 0:
+                raise TypeError(
+                    "Kv.write() got an unexpected positional argument with "
+                    "keyword argument 'protobuf_atomic_write'"
+                )
+
+            return await self._atomic_write(protobuf_atomic_write)
+
+        planned_write: PlannedWrite | AtomicWriteRepresentationWriter[WriteResultT]
+        if arg is ...:
+            # arg is ... when 0 args were passed, which is OK (no operations).
+            # But ... when args are provided means it was passed explicitly.
             if args:
-                raise TypeError("arguments cannot be None")
-            # One None arg means 0 args were passed
+                raise TypeError("Kv.write() got an unexpected '...'")
+            # Note that it's OK to submit a write with no operations. We get a
+            # versionstamp back. Submitting a write with only checks could be
+            # used to check if a key has been changed without reading the value.
             planned_write = PlannedWrite()
-        elif isinstance(arg, PlannedWrite):
+        elif isinstance(arg, AtomicWriteRepresentationWriter):
             planned_write = arg
             if args:
-                raise TypeError("unexpected arguments after PlannedWrite")
+                raise TypeError(
+                    "Kv.write() got unexpected arguments after 'planned_write'"
+                )
         else:
             planned_write = self.atomic(arg, *args)
 
-        # Note that it's OK to submit a write with no operations. We get a
-        # versionstamp back. Submitting a write with only checks could be used
-        # to check if a key has been changed without reading the value.
-        result = await self._atomic_write(
-            planned_write.as_protobuf(v8_encoder=self.v8_encoder)
-        )
-
-        concrete_checks = [
-            Check(key=key_ver.key, versionstamp=key_ver.versionstamp)
-            for key_ver in planned_write.checks
-        ]
-
-        if isinstance(result, Err):
-            if isinstance(result.error, CheckFailure):
-                check_failure = result.error
-                return ConflictedWrite(
-                    failed_checks=list(check_failure.failed_check_indexes),
-                    checks=concrete_checks,
-                    mutations=planned_write.mutations,
-                    enqueues=planned_write.enqueues,
-                )
-            raise result.error
-
-        raw_versionstamp, endpoint = result.value
-        return CommittedWrite(
-            versionstamp=VersionStamp(raw_versionstamp),
-            checks=concrete_checks,
-            mutations=planned_write.mutations,
-            enqueues=planned_write.enqueues,
-        )
+        return await planned_write.write(kv=self, v8_encoder=self.v8_encoder)
 
 
 _KvSnapshotReadResult: TypeAlias = Result[
     tuple[SnapshotReadOutput, EndpointInfo], DataPathError
 ]
 _KvAtomicWriteResult: TypeAlias = Result[
-    tuple[bytes, EndpointInfo], CheckFailure | DataPathError
+    tuple[VersionStamp, EndpointInfo], CheckFailure | DataPathError
 ]
 
 

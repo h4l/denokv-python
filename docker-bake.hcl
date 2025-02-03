@@ -30,6 +30,20 @@ function "get_py_image_tag" {
 
 py_versions = ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
+target "dev" {
+    name = "dev_py${replace(py, ".", "")}"
+    matrix = {
+        py = py_versions,
+    }
+    args = {
+        PYTHON_VER = get_py_image_tag(py)
+        REPORT_CODE_COVERAGE = REPORT_CODE_COVERAGE
+        REPORT_CODE_BRANCH_COVERAGE = REPORT_CODE_BRANCH_COVERAGE
+    }
+    target = "poetry"
+    tags = ["ghcr.io/h4l/denokv-python/dev:py${replace(py, ".", "")}"]
+}
+
 target "test" {
     name = "test_py${replace(py, ".", "")}"
     matrix = {

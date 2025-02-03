@@ -11,6 +11,19 @@ services:
     networks:
       - devcontainer_denokv_python
 
+  dev-py39:
+    profiles: [dev-py39]
+    image: ghcr.io/h4l/denokv-python/dev:py39
+    volumes:
+      - workspace:/workspaces
+    working_dir: /workspaces/denokv-python
+    environment:
+      PYTHONPATH: /workspaces/denokv-python/src
+    command: poetry run ipython
+    networks:
+      - devcontainer_denokv_python
+
+
 networks:
   devcontainer_denokv_python:
     external: true

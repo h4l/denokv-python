@@ -10,15 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-from typing import IO as IO
-from typing import TYPE_CHECKING as TYPE_CHECKING
 
 # Everything that exist in typing >=py39 except:
 # - ByteString (deprecated)
 # - overload (ruff does not recognise it when re-exported)
 # - Literal (ruff does not recognise it when re-exported)
 # - Handled below due to runtime differences:
-#   - TypeVar
+#   - TypeVar (does not support default argument pre py313)
+#   - TypedDict (does not support generics pre py311)
+from typing import IO as IO
+from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import AbstractSet as AbstractSet
 from typing import Annotated as Annotated
 from typing import Any as Any
@@ -79,7 +80,6 @@ from typing import Text as Text
 from typing import TextIO as TextIO
 from typing import Tuple as Tuple
 from typing import Type as Type
-from typing import TypedDict as TypedDict
 from typing import Union as Union
 from typing import ValuesView as ValuesView
 from typing import cast as cast
@@ -165,6 +165,18 @@ else:
 
     def override(method, /):
         return method
+
+
+if TYPE_CHECKING:
+    from typing_extensions import TypedDict as TypedDict
+else:
+
+    class TypedDict(dict):
+        def __new__(cls, *args, **kwargs):
+            return dict(*args, **kwargs)
+
+        @classmethod
+        def __init_subclass__(cls, total: bool = True) -> None: ...
 
 
 def assert_never(value: Never, /) -> Never:

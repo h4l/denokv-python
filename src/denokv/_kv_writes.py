@@ -35,7 +35,9 @@ from denokv._pycompat.typing import TYPE_CHECKING
 from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import ClassVar
 from denokv._pycompat.typing import Container
+from denokv._pycompat.typing import Final
 from denokv._pycompat.typing import Generic
+from denokv._pycompat.typing import Iterable
 from denokv._pycompat.typing import Mapping
 from denokv._pycompat.typing import MutableSequence
 from denokv._pycompat.typing import Never
@@ -60,6 +62,7 @@ from denokv.backoff import ExponentialBackoff
 from denokv.datapath import AnyKvKey
 from denokv.datapath import CheckFailure
 from denokv.datapath import pack_key
+from denokv.errors import DenoKvError
 from denokv.kv_keys import KvKey
 from denokv.result import AnyFailure
 from denokv.result import AnySuccess
@@ -1330,50 +1333,111 @@ class PlannedWrite(
         return self
 
 
-@dataclass(init=False, unsafe_hash=True, **slots_if310())
-class ConflictedWrite(FrozenAfterInitDataclass, AnyFailure):
+EMPTY_MAP: Final[Mapping[Any, Any]] = MappingProxyType({})
+
+
+# TODO: Support capturing retries in the FailedWrite/CommittedWrite?
+@dataclass(init=False, unsafe_hash=True)
+class FailedWrite(FrozenAfterInitDataclass, AnyFailure, DenoKvError):
     if TYPE_CHECKING:
 
         def _AnyFailure_marker(self, no_call: Never) -> Never: ...
 
-    ok: Literal[False]
-    conflicts: Mapping[AnyKvKey, CheckRepresentation]
-    versionstamp: None
-    checks: Sequence[CheckRepresentation]
-    mutations: Sequence[MutationRepresentation]
-    enqueues: Sequence[EnqueueRepresentation]
-    endpoint: EndpointInfo
+    checks: Final[Sequence[CheckRepresentation]] = field()
+    failed_checks: Final[Sequence[int]] = field()
+    mutations: Final[Sequence[MutationRepresentation]] = field()
+    enqueues: Final[Sequence[EnqueueRepresentation]] = field()
+    endpoint: Final[EndpointInfo] = field()
+    ok: Final[Literal[False]] = False  # noqa: PYI064
+    versionstamp: Final[None] = None
 
     def __init__(
         self,
-        failed_checks: Sequence[int],
-        checks: Sequence[CheckRepresentation],
-        mutations: Sequence[MutationRepresentation],
-        enqueues: Sequence[EnqueueRepresentation],
+        checks: Iterable[CheckRepresentation],
+        mutations: Iterable[MutationRepresentation],
+        enqueues: Iterable[EnqueueRepresentation],
         endpoint: EndpointInfo,
+        *,
+        cause: BaseException | None = None,
     ) -> None:
-        self.ok = False
-        try:
-            self.conflicts = MappingProxyType(
-                {checks[i].key: checks[i] for i in failed_checks}
-            )
-        except IndexError as e:
-            raise ValueError("failed_checks contains out-of-bounds index") from e
-        self.versionstamp = None
-        self.checks = tuple(checks)
-        self.mutations = tuple(mutations)
-        self.enqueues = tuple(enqueues)
-        self.endpoint = endpoint
+        super(FailedWrite, self).__init__()
+        self.checks = tuple(checks)  # type: ignore[misc] # Cannot assign to final
+        # Allow subclass to initialise failed_checks
+        if not hasattr(self, "failed_checks"):
+            self.failed_checks = tuple()  # type: ignore[misc] # Cannot assign to final
+        self.mutations = tuple(mutations)  # type: ignore[misc] # Cannot assign to final
+        self.enqueues = tuple(enqueues)  # type: ignore[misc] # Cannot assign to final
+        self.endpoint = endpoint  # type: ignore[misc] # Cannot assign to final
+        self.__cause__ = cause
+
+    @property
+    def conflicts(self) -> Mapping[AnyKvKey, CheckRepresentation]:
+        checks = self.checks
+        return {checks[i].key: checks[i] for i in self.failed_checks}
+
+    def _get_cause_description(self) -> str:
+        if self.__cause__:
+            return type(self.__cause__).__name__
+        return "unspecified cause"
+
+    @property
+    def message(self) -> str:
+        # TODO: after xxx attempts?
+        return (
+            f"to {str(self.endpoint.url)!r} "
+            f"due to {self._get_cause_description()}, "
+            f"with {len(self.checks)} checks, "
+            f"{len(self.mutations)} mutations, "
+            f"{len(self.enqueues)} enqueues"
+        )
+
+    def __str__(self) -> str:
+        return f"Write failed {self.message}"
 
     def __repr__(self) -> str:
+        return f"<{type(self).__name__} {self.message}>"
+
+
+def _normalise_failed_checks(
+    failed_checks: Iterable[int], check_count: int
+) -> tuple[int, ...]:
+    failed_checks = tuple(sorted(failed_checks))
+    if failed_checks and (failed_checks[0] < 0 or failed_checks[-1] >= check_count):
+        raise ValueError("failed_checks contains out-of-bounds index")
+    return failed_checks
+
+
+class ConflictedWrite(FailedWrite):
+    def __init__(
+        self,
+        failed_checks: Iterable[int],
+        checks: Iterable[CheckRepresentation],
+        mutations: Iterable[MutationRepresentation],
+        enqueues: Iterable[EnqueueRepresentation],
+        endpoint: EndpointInfo,
+        *,
+        cause: BaseException | None = None,
+    ) -> None:
+        _checks = tuple(checks)
+        self.failed_checks = _normalise_failed_checks(  # type: ignore[misc] # Cannot assign to final attribute "failed_checks"
+            failed_checks,
+            check_count=len(_checks),
+        )
+        super(ConflictedWrite, self).__init__(
+            _checks, mutations, enqueues, endpoint, cause=cause
+        )
+
+    @property
+    def message(self) -> str:
         return (
-            f"<{type(self).__name__} "
             f"NOT APPLIED to {str(self.endpoint.url)!r} with "
             f"{len(self.conflicts)}/{len(self.checks)} checks CONFLICTING, "
             f"{len(self.mutations)} mutations, "
             f"{len(self.enqueues)} enqueues"
-            f">"
         )
+
+    def __str__(self) -> str:
+        return f"Write {self.message}"
 
 
 @dataclass(init=False, unsafe_hash=True, **slots_if310())
@@ -1382,13 +1446,13 @@ class CommittedWrite(FrozenAfterInitDataclass, AnySuccess):
 
         def _AnySuccess_marker(self, no_call: Never) -> Never: ...
 
-    ok: Literal[True]
-    conflicts: Mapping[KvKey, CheckRepresentation]  # empty
-    versionstamp: VersionStamp
-    checks: Sequence[CheckRepresentation]
-    mutations: Sequence[MutationRepresentation]
-    enqueues: Sequence[EnqueueRepresentation]
-    endpoint: EndpointInfo
+    ok: Final[Literal[True]]  # noqa: PYI064
+    conflicts: Final[Mapping[KvKey, CheckRepresentation]]  # empty
+    versionstamp: Final[VersionStamp]
+    checks: Final[Sequence[CheckRepresentation]]
+    mutations: Final[Sequence[MutationRepresentation]]
+    enqueues: Final[Sequence[EnqueueRepresentation]]
+    endpoint: Final[EndpointInfo]
 
     def __init__(
         self,
@@ -1399,22 +1463,27 @@ class CommittedWrite(FrozenAfterInitDataclass, AnySuccess):
         endpoint: EndpointInfo,
     ) -> None:
         self.ok = True
-        self.conflicts = MappingProxyType({})
+        self.conflicts = EMPTY_MAP
         self.versionstamp = versionstamp
         self.checks = tuple(checks)
         self.mutations = tuple(mutations)
         self.enqueues = tuple(enqueues)
         self.endpoint = endpoint
 
-    def __repr__(self) -> str:
+    @property
+    def _message(self) -> str:
         return (
-            f"<{type(self).__name__} "
             f"version 0x{self.versionstamp} to {str(self.endpoint.url)!r} with "
             f"{len(self.checks)} checks, "
             f"{len(self.mutations)} mutations, "
             f"{len(self.enqueues)} enqueues"
-            f">"
         )
+
+    def __str__(self) -> str:
+        return f"Write committed {self._message}"
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__} {self._message}>"
 
 
 CompletedWrite: TypeAlias = Union[CommittedWrite, ConflictedWrite]
@@ -2078,4 +2147,6 @@ class Enqueue(FrozenAfterInitDataclass, EnqueueRepresentation):
         return [int(delay * 1000) for delay in delay_seconds]
 
 
-WriteOperation: TypeAlias = Union[Check, Set, Sum, Min, Max, Delete, Enqueue]
+WriteOperation: TypeAlias = Union[
+    CheckRepresentation, MutationRepresentation, EnqueueRepresentation
+]

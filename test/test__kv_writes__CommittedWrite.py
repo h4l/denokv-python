@@ -61,7 +61,10 @@ def test_str_repr() -> None:
         endpoint=EP,
     )
     assert (
-        str(instance) == "<CommittedWrite version 0x00000000000000000001 "
+        str(instance) == "Write committed version 0x00000000000000000001 "
+        "to 'https://example.com/' with 1 checks, 1 mutations, 1 enqueues"
+    )
+    assert (
+        repr(instance) == "<CommittedWrite version 0x00000000000000000001 "
         "to 'https://example.com/' with 1 checks, 1 mutations, 1 enqueues>"
     )
-    assert str(instance) == repr(instance)

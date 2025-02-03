@@ -20,6 +20,7 @@ from denokv._kv_writes import CommittedWrite
 from denokv._kv_writes import ConflictedWrite
 from denokv._kv_writes import Delete
 from denokv._kv_writes import Enqueue
+from denokv._kv_writes import FailedWrite
 from denokv._kv_writes import Limit
 from denokv._kv_writes import LimitExceededPolicy
 from denokv._kv_writes import Max
@@ -234,10 +235,10 @@ async def test_write__handles_write_request_failure(
     )
     mocked(writer.write).return_value = failed_write
 
-    with pytest.raises(ResponseUnsuccessful) as exc_info:
+    with pytest.raises(FailedWrite) as exc_info:
         await planned_write.write(kv=writer, v8_encoder=v8_encoder)
 
-    assert exc_info.value == error
+    assert exc_info.value.__cause__ == error
 
 
 @pytest.mark.asyncio()

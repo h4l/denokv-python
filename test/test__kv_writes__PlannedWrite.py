@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from unittest.mock import create_autospec
 
 import pytest
@@ -28,6 +27,7 @@ from denokv._kv_writes import Min
 from denokv._kv_writes import PlannedWrite
 from denokv._kv_writes import Sum
 from denokv._pycompat.typing import TypedDict
+from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.auth import ConsistencyLevel
 from denokv.auth import EndpointInfo
 from denokv.datapath import AutoRetry
@@ -64,7 +64,7 @@ async def test_as_protobuf(
         datapath_pb2.AtomicWrite(),
     )
 
-    T1 = datetime.fromisoformat("2000-01-01T00:00:00Z")
+    T1 = parse_rfc3339_datetime("2000-01-01T00:00:00Z").value_or_raise()
 
     planned_write_start = PlannedWrite()
     planned_write = (

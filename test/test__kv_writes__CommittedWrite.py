@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from yarl import URL
 
 from denokv._kv_values import VersionStamp
@@ -9,12 +7,13 @@ from denokv._kv_writes import Check
 from denokv._kv_writes import CommittedWrite
 from denokv._kv_writes import Enqueue
 from denokv._kv_writes import Set
+from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.auth import ConsistencyLevel
 from denokv.auth import EndpointInfo
 from denokv.kv_keys import KvKey
 from denokv.result import is_ok
 
-T1 = datetime.fromisoformat("2000-01-02T03:04:05.6Z")
+T1 = parse_rfc3339_datetime("2000-01-02T03:04:05.6Z").value_or_raise()
 EP = EndpointInfo(URL("https://example.com/"), consistency=ConsistencyLevel.STRONG)
 
 

@@ -1,4 +1,3 @@
-from datetime import datetime
 from itertools import count
 from itertools import islice
 
@@ -8,9 +7,10 @@ from denokv import _datapath_pb2 as datapath_pb2
 from denokv._kv_writes import DEFAULT_ENQUEUE_RETRY_DELAY_COUNT
 from denokv._kv_writes import DEFAULT_ENQUEUE_RETRY_DELAYS
 from denokv._kv_writes import Enqueue
+from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.kv_keys import KvKey
 
-T1 = datetime.fromisoformat("2000-01-02T03:04:05.6Z")
+T1 = parse_rfc3339_datetime("2000-01-02T03:04:05.6Z").value_or_raise()
 
 
 def test_constructors() -> None:

@@ -33,6 +33,7 @@ from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import NewType
 from denokv._pycompat.typing import assert_type
 from denokv._pycompat.typing import cast
+from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.datapath import read_range_single
 from denokv.kv_keys import KvKey
 from denokv.result import Err
@@ -45,7 +46,7 @@ from test.denokv_testing import add_entries
 from test.denokv_testing import typeval
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 
-T1 = datetime.fromisoformat("2000-01-02T03:04:05.6Z")
+T1 = parse_rfc3339_datetime("2000-01-02T03:04:05.6Z").value_or_raise()
 
 u64 = st.integers(min_value=0, max_value=KvU64.RANGE.stop - 1)
 neg_u64 = st.integers(min_value=-(KvU64.RANGE.stop - 1), max_value=0)

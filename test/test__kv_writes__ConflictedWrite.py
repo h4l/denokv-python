@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import traceback
-from datetime import datetime
 
 import pytest
 from yarl import URL
@@ -14,13 +13,14 @@ from denokv._kv_writes import Set
 from denokv._pycompat.typing import Iterable
 from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import cast
+from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.auth import ConsistencyLevel
 from denokv.auth import EndpointInfo
 from denokv.datapath import CheckFailure
 from denokv.kv_keys import KvKey
 from denokv.result import is_err
 
-T1 = datetime.fromisoformat("2000-01-02T03:04:05.6Z")
+T1 = parse_rfc3339_datetime("2000-01-02T03:04:05.6Z").value_or_raise()  # noqa: F821
 EP = EndpointInfo(URL("https://example.com/"), consistency=ConsistencyLevel.STRONG)
 
 

@@ -1,5 +1,4 @@
 import builtins
-from datetime import datetime
 from typing import Literal
 
 import pytest
@@ -18,10 +17,11 @@ from denokv._pycompat.typing import Any
 from denokv._pycompat.typing import NewType
 from denokv._pycompat.typing import assert_type
 from denokv._pycompat.typing import cast
+from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.kv_keys import KvKey
 from test.denokv_testing import typeval
 
-T1 = datetime.fromisoformat("2000-01-02T03:04:05.6Z")
+T1 = parse_rfc3339_datetime("2000-01-02T03:04:05.6Z").value_or_raise()
 k = KvKey("a")
 
 

@@ -16,12 +16,15 @@ from denokv.datapath import KvKeyPiece
 from denokv.datapath import KvKeyTuple
 from denokv.datapath import pack_key
 from denokv.kv_keys import KvKey
+from test.denokv_testing import create_dataclass_slots_test
 
 
-def test_instances_do_not_define_dict() -> None:
-    k = KvKey()
-    with pytest.raises(AttributeError):
-        print(k.__dict__)
+@pytest.fixture
+def instance() -> KvKey:
+    return KvKey("a")
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 def test_instances_are_KvKeyEncodable() -> None:

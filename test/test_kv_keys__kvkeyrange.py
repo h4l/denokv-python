@@ -11,6 +11,7 @@ from denokv.kv_keys import KvKey
 from denokv.kv_keys import KvKeyRange
 from denokv.kv_keys import StartBoundary
 from denokv.kv_keys import StopBoundary
+from test.denokv_testing import create_dataclass_slots_test
 
 
 def test_types() -> None:
@@ -192,3 +193,20 @@ def test_contains__stop(
     key_range = KvKeyRange(IncludeAll(), stop)
 
     assert (key in key_range) == key_included
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(Include("b", 10), id="Include"),
+        pytest.param(IncludePrefix("b", 10), id="IncludePrefix"),
+        pytest.param(Exclude("b", 10), id="Exclude"),
+        pytest.param(IncludeAll(), id="IncludeAll"),
+        pytest.param(KvKeyRange(), id="KvKeyRange"),
+    ]
+)
+def instance(request: pytest.FixtureRequest) -> object:
+    param: object = request.param
+    return param
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from v8serialize.constants import FLOAT64_SAFE_INT_RANGE
 from v8serialize.jstypes import JSBigInt
 
@@ -8,6 +9,15 @@ from denokv._kv_writes import LIMIT_KVU64
 from denokv._kv_writes import LIMIT_UNLIMITED
 from denokv._kv_writes import Limit
 from denokv._kv_writes import LimitExceededPolicy
+from test.denokv_testing import create_dataclass_slots_test
+
+
+@pytest.fixture
+def instance() -> Limit:
+    return Limit(1, 5, "clamp")
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 def test_constructor() -> None:

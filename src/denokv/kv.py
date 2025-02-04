@@ -213,7 +213,7 @@ class KvCredentials:
     access_token: str
 
 
-@dataclass
+@dataclass(frozen=True, **slots_if310())
 class Authenticator:
     """
     Authenticates with a KV database server and returns its metadata.
@@ -902,7 +902,7 @@ _KvAtomicWriteResult: TypeAlias = Result[
 ]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class ListContext:
     prefix: AnyKvKey | None
     start: AnyKvKey | None
@@ -925,12 +925,14 @@ class ListContext:
 
 
 class AnyCursorFormat(Protocol):
+    __slots__ = ()
+
     def get_key_for_cursor(self, cursor: str) -> Result[KvKeyTuple, InvalidCursor]: ...
 
     def get_cursor_for_key(self, key: AnyKvKey) -> Result[str, ValueError]: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, **slots_if310())
 class Base64KeySuffixCursorFormat(AnyCursorFormat):
     r"""
     A cursor format that encodes keys as URL-safe base64.

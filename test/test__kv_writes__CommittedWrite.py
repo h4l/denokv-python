@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from yarl import URL
 
 from denokv._kv_values import VersionStamp
@@ -12,9 +13,20 @@ from denokv.auth import ConsistencyLevel
 from denokv.auth import EndpointInfo
 from denokv.kv_keys import KvKey
 from denokv.result import is_ok
+from test.denokv_testing import create_dataclass_slots_test
 
 T1 = parse_rfc3339_datetime("2000-01-02T03:04:05.6Z").value_or_raise()
 EP = EndpointInfo(URL("https://example.com/"), consistency=ConsistencyLevel.STRONG)
+
+
+@pytest.fixture
+def instance() -> CommittedWrite:
+    return CommittedWrite(
+        VersionStamp(1), checks=[], mutations=[], enqueues=[], endpoint=EP
+    )
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 def test_is_AnySuccess() -> None:

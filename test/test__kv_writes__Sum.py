@@ -43,6 +43,7 @@ from denokv.result import is_err
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import SumLimitExceeded
 from test.denokv_testing import add_entries
+from test.denokv_testing import create_dataclass_slots_test
 from test.denokv_testing import typeval
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
 
@@ -50,6 +51,14 @@ T1 = parse_rfc3339_datetime("2000-01-02T03:04:05.6Z").value_or_raise()
 
 u64 = st.integers(min_value=0, max_value=KvU64.RANGE.stop - 1)
 neg_u64 = st.integers(min_value=-(KvU64.RANGE.stop - 1), max_value=0)
+
+
+@pytest.fixture
+def instance() -> Sum:
+    return Sum(KvKey("a"), 1)
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 def test_init__limits() -> None:

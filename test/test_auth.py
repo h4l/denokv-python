@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime
 from uuid import UUID
 
 import aiohttp
@@ -30,10 +31,45 @@ from denokv.auth import get_database_metadata
 from denokv.auth import read_metadata_exchange_response
 from test.denokv_testing import assume_err
 from test.denokv_testing import assume_ok
+from test.denokv_testing import create_dataclass_slots_test
 
 TestClient: TypeAlias = _TestClient[web.Request, web.Application]
 
 pytest_mark_asyncio = pytest.mark.asyncio()
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(
+            lambda: DatabaseMetadata(
+                version=2,
+                database_id=UUID("AD50A341-5351-4FC3-82D0-72CFEE369A09"),
+                token="thisisnotasecret",
+                expires_at=datetime.now(),
+                endpoints=(
+                    EndpointInfo(
+                        url=URL("https://db.example.com/v2"),
+                        consistency=ConsistencyLevel.STRONG,
+                    ),
+                ),
+            ),
+            id="DatabaseMetadata",
+        ),
+        pytest.param(
+            lambda: EndpointInfo(
+                url=URL("https://db.example.com/v2"),
+                consistency=ConsistencyLevel.STRONG,
+            ),
+            id="EndpointInfo",
+        ),
+    ]
+)
+def instance(request: pytest.FixtureRequest) -> object:
+    param: Callable[[], object] = request.param
+    return param()
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 @pytest.fixture

@@ -19,10 +19,19 @@ from denokv._pycompat.typing import assert_type
 from denokv._pycompat.typing import cast
 from denokv._rfc3339 import parse_rfc3339_datetime
 from denokv.kv_keys import KvKey
+from test.denokv_testing import create_dataclass_slots_test
 from test.denokv_testing import typeval
 
 T1 = parse_rfc3339_datetime("2000-01-02T03:04:05.6Z").value_or_raise()
 k = KvKey("a")
+
+
+@pytest.fixture
+def instance() -> Max:
+    return Max(k, 9, KvNumber.float)
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 def test_init__float() -> None:

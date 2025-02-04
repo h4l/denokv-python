@@ -13,10 +13,12 @@ from datetime import datetime
 from datetime import timedelta
 from itertools import groupby
 from typing import Literal
+from typing import Never
 from typing import overload
 from unittest.mock import Mock
 from uuid import UUID
 
+import pytest
 import v8serialize
 import v8serialize.encode
 from aiohttp import web
@@ -879,3 +881,14 @@ else:
 
 def typeval(value: T) -> tuple[type[T], T]:
     return type(value), value
+
+
+def create_dataclass_slots_test() -> Callable[[Never], None]:
+    @pytest.mark.skipif(
+        sys.version_info < (3, 10), reason="<3.10 does not use slots for dataclass"
+    )
+    def test_instances_dont_have_dict_because_of_slots(instance: object) -> None:
+        with pytest.raises(AttributeError):
+            _ = instance.__dict__
+
+    return test_instances_dont_have_dict_because_of_slots

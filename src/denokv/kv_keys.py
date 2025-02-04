@@ -333,6 +333,8 @@ class _KeyBoundary(Generic[AnyKvKeyT_co]):
 class Include(_KeyBoundary[AnyKvKeyT_co]):
     """KvKeyRange boundary that includes its key in the range."""
 
+    __slots__ = ()
+
     if TYPE_CHECKING:
         # For some reason mypy only infers types of Pieces using new not init
         @overload
@@ -351,6 +353,7 @@ class Include(_KeyBoundary[AnyKvKeyT_co]):
 class IncludePrefix(_KeyBoundary[AnyKvKeyT_co]):
     """KvKeyRange boundary that includes keys prefixed by its key in the range."""
 
+    __slots__ = ()
     if TYPE_CHECKING:
         # For some reason mypy only infers types of Pieces using new not init
         @overload
@@ -388,6 +391,7 @@ class IncludePrefix(_KeyBoundary[AnyKvKeyT_co]):
 class Exclude(_KeyBoundary[AnyKvKeyT_co]):
     """KvKeyRange boundary that excludes its key from the range."""
 
+    __slots__ = ()
     if TYPE_CHECKING:
         # For some reason mypy only infers types of Pieces using new not init
         @overload

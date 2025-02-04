@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from typing import Literal
 from unittest.mock import Mock
 
@@ -8,10 +7,12 @@ import pytest
 
 from denokv._pycompat.typing import TYPE_CHECKING
 from denokv._pycompat.typing import Any
+from denokv._pycompat.typing import Callable
 from denokv._pycompat.typing import Iterable
 from denokv._pycompat.typing import Never
 from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import TypeIs
+from denokv._pycompat.typing import Union
 from denokv._pycompat.typing import cast
 from denokv.result import AnyFailure
 from denokv.result import AnySuccess
@@ -27,17 +28,23 @@ from denokv.result import Results
 from denokv.result import Some
 from denokv.result import is_err
 from denokv.result import is_ok
+from test.denokv_testing import create_dataclass_slots_test
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="<3.10 does not use slots for dataclass"
+@pytest.fixture(
+    params=[
+        pytest.param(lambda: Some(1), id="Some"),
+        pytest.param(lambda: Nothing(), id="Nothing"),
+        pytest.param(lambda: Ok(1), id="Ok"),
+        pytest.param(lambda: Err("x"), id="Err"),
+    ]
 )
-def test_Option__instances_use_slots_to_avoid_dict() -> None:
-    with pytest.raises(AttributeError):
-        print(Some(1).__dict__)
+def instance(request: pytest.FixtureRequest) -> Option[int] | Result[int, str]:
+    param: Callable[[], Union[Option[int], Result[int, str]]] = request.param
+    return param()
 
-    with pytest.raises(AttributeError):
-        print(Nothing().__dict__)
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 def test_Option__satisfies_OptionMethods() -> None:
@@ -199,17 +206,6 @@ def test_Option() -> None:
     def type_check_zip_with(a: Option[str], b: Option[object]) -> Option[int]:
         # must be type error
         return a.zip_with(b, int)  # type: ignore[arg-type]
-
-
-@pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="<3.10 does not use slots for dataclass"
-)
-def test_Result__instances_use_slots_to_avoid_dict() -> None:
-    with pytest.raises(AttributeError):
-        print(Ok(1).__dict__)
-
-    with pytest.raises(AttributeError):
-        print(Err("x").__dict__)
 
 
 def test_Result__satisfies_ResultMethods() -> None:

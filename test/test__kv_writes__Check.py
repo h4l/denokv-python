@@ -1,9 +1,19 @@
+import pytest
 from v8serialize import Encoder
 
 from denokv import _datapath_pb2 as datapath_pb2
 from denokv._kv_values import VersionStamp
 from denokv._kv_writes import Check
 from denokv.kv_keys import KvKey
+from test.denokv_testing import create_dataclass_slots_test
+
+
+@pytest.fixture
+def instance() -> Check:
+    return Check(KvKey("a"), None)
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 def test_constructors() -> None:

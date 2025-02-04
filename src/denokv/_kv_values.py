@@ -51,6 +51,8 @@ class VersionStamp(bytes):
     '00000000000000ff0000'
     """
 
+    __slots__ = ()
+
     RANGE: ClassVar = range(0, 2**80)
 
     def __new__(cls, value: str | bytes | int) -> Self:

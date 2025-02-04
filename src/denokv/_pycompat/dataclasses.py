@@ -51,6 +51,8 @@ class FrozenAfterInitDataclass:
     doesn't affect non-dataclass fields, such as typing.Generic's dunder fields.
     """
 
+    __slots__ = ()
+
     def __delattr__(self, name: str) -> None:
         if name in (f.name for f in dataclass_fields(self)):
             raise FrozenInstanceError(f"cannot delete field {name}")

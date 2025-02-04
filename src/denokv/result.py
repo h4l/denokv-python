@@ -29,11 +29,15 @@ P = ParamSpec("P")
 
 @runtime_checkable
 class AnySuccess(Protocol, metaclass=ABCMeta):
+    __slots__ = ()
+
     def _AnySuccess_marker(self, no_call: Never) -> Never: ...
 
 
 @runtime_checkable
 class AnyFailure(Protocol, metaclass=ABCMeta):
+    __slots__ = ()
+
     def _AnyFailure_marker(self, no_call: Never) -> Never: ...
 
 

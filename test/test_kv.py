@@ -77,12 +77,16 @@ from denokv.errors import DenoKvError
 from denokv.errors import InvalidCursor
 from denokv.kv import Authenticator
 from denokv.kv import AuthenticatorFn
+from denokv.kv import Base64KeySuffixCursorFormat
 from denokv.kv import CachedValue
 from denokv.kv import DatabaseMetadataCache
 from denokv.kv import EndpointSelector
 from denokv.kv import Kv
+from denokv.kv import KvCredentials
 from denokv.kv import KvFlags
 from denokv.kv import KvListOptions
+from denokv.kv import ListContext
+from denokv.kv import ListKvEntry
 from denokv.kv import OpenKvFinalize
 from denokv.kv import normalize_key
 from denokv.kv import open_kv
@@ -97,6 +101,7 @@ from test.denokv_testing import ExampleCursorFormat
 from test.denokv_testing import MockKvDb
 from test.denokv_testing import add_entries
 from test.denokv_testing import assume_ok
+from test.denokv_testing import create_dataclass_slots_test
 from test.denokv_testing import make_database_metadata
 from test.denokv_testing import mock_db_api
 from test.denokv_testing import unsafe_parse_protobuf_kv_entry
@@ -1621,3 +1626,57 @@ async def all_inner_tasks_awaited() -> AsyncGenerator[None]:
     inner_tasks = asyncio.all_tasks() - pre_existing_tasks
     if inner_tasks:
         await asyncio.wait(inner_tasks)
+
+
+LIST_CONTEXT = ListContext(
+    None,
+    None,
+    None,
+    b"",
+    b"",
+    None,
+    None,
+    False,
+    ConsistencyLevel.STRONG,
+    1,
+    lambda lc: Base64KeySuffixCursorFormat(lc.packed_start, lc.packed_end),
+)
+
+DB_META = DatabaseMetadata(
+    version=2,
+    database_id=UUID("AD50A341-5351-4FC3-82D0-72CFEE369A09"),
+    token="thisisnotasecret",
+    expires_at=datetime.now(),
+    endpoints=(
+        EndpointInfo(
+            url=URL("https://db.example.com/v2"),
+            consistency=ConsistencyLevel.STRONG,
+        ),
+    ),
+)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(
+            ListKvEntry(KvKey("a"), 42, VersionStamp(1), LIST_CONTEXT), id="ListKvEntry"
+        ),
+        pytest.param(EndpointSelector(DB_META), id="EndpointSelector"),
+        pytest.param(CachedValue(fresh_until=42, value=42), id="CachedValue"),
+        pytest.param(KvCredentials(URL("http://example"), ""), id="KvCredentials"),
+        pytest.param(
+            Authenticator(cast(Any, None), cast(Any, None), cast(Any, None)),
+            id="Authenticator",
+        ),
+        pytest.param(LIST_CONTEXT, id="ListContext"),
+        pytest.param(
+            Base64KeySuffixCursorFormat(b"", b""), id="Base64KeySuffixCursorFormat"
+        ),
+    ]
+)
+def instance(request: pytest.FixtureRequest) -> object:
+    param: object = request.param
+    return param
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()

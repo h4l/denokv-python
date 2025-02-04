@@ -1,10 +1,30 @@
 from __future__ import annotations
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from denokv._kv_values import KvEntry
 from denokv._kv_values import KvU64
 from denokv._kv_values import VersionStamp
+from denokv._pycompat.typing import Callable
+from denokv.kv_keys import KvKey
+from test.denokv_testing import create_dataclass_slots_test
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(lambda: KvEntry(KvKey("a"), 42, VersionStamp(1)), id="KvEntry"),
+        pytest.param(lambda: VersionStamp(1), id="VersionStamp"),
+        pytest.param(lambda: KvU64(1), id="KvU64"),
+    ]
+)
+def instance(request: pytest.FixtureRequest) -> object:
+    param: Callable[[], object] = request.param
+    return param()
+
+
+test_instances_dont_have_dict_because_of_slots = create_dataclass_slots_test()
 
 
 @given(v=st.integers(min_value=0, max_value=2**80 - 1))

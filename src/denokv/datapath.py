@@ -84,6 +84,8 @@ _T = TypeVar("_T")
 
 @runtime_checkable
 class KvKeyRangeEncodable(Container[AnyKvKey], Protocol):
+    __slots__ = ()
+
     def kv_key_range_bytes(self) -> tuple[bytes, bytes]: ...
 
 

@@ -6,14 +6,17 @@ _Connect to [Deno KV] cloud and [self-hosted] databases from Python._
 [self-hosted]: https://deno.com/blog/kv-is-open-source-with-continuous-backup
 [denokv server]: https://github.com/denoland/denokv
 
-The `denokv` package is an unofficial Python client for the Deno KV database. It can connect to
-both the distributed cloud KV service, or self-hosted [denokv server] (which can be a replica of a cloud KV database, or standalone).
+The `denokv` package is an unofficial Python client for the Deno KV database. It
+can connect to both the distributed cloud KV service, or self-hosted [denokv
+server] (which can be a replica of a cloud KV database, or standalone).
 
-It implements version 3 of the [KV Connect protocol spec, published by Deno](https://github.com/denoland/denokv/blob/main/proto/kv-connect.md).
+It implements version 3 of the
+[KV Connect protocol spec, published by Deno](https://github.com/denoland/denokv/blob/main/proto/kv-connect.md).
 
 ## Status
 
-The package is under active development and is not yet stable or feature-complete.
+The package is under active development and is not yet stable or
+feature-complete.
 
 **Working**:
 

@@ -51,6 +51,9 @@ def test_constructors() -> None:
     assert instance.enqueues == (Enqueue("Hi"),)
     assert instance.endpoint is EP
 
+    assert instance.conflicts == {}
+    assert not instance.has_unknown_conflicts
+
 
 def test_str_repr() -> None:
     instance = CommittedWrite(

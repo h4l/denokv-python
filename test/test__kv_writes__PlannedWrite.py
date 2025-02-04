@@ -211,7 +211,7 @@ async def test_write__handles_unsuccessful_conflicted_write(
     result = await planned_write.write(kv=writer, v8_encoder=v8_encoder)
 
     assert result == ConflictedWrite(
-        failed_checks=list(error.failed_check_indexes),
+        failed_checks=error.failed_check_indexes,
         checks=planned_write.checks,
         mutations=planned_write.mutations,
         enqueues=planned_write.enqueues,

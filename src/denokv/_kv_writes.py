@@ -1279,13 +1279,19 @@ class PlannedWrite(
             if isinstance(result.error, CheckFailure):
                 check_failure = result.error
                 return ConflictedWrite(
-                    failed_checks=list(check_failure.failed_check_indexes),
+                    failed_checks=check_failure.failed_check_indexes,
                     checks=checks,
                     mutations=mutations,
                     enqueues=enqueues,
                     endpoint=check_failure.endpoint,
+                    cause=check_failure,
                 )
-            raise result.error
+            raise FailedWrite(
+                checks=checks,
+                mutations=mutations,
+                enqueues=enqueues,
+                endpoint=result.error.endpoint,
+            ) from result.error
 
         versionstamp, endpoint = result.value
         return CommittedWrite(
@@ -1345,6 +1351,13 @@ class FailedWrite(FrozenAfterInitDataclass, AnyFailure, DenoKvError):
 
     checks: Final[Sequence[CheckRepresentation]] = field()
     failed_checks: Final[Sequence[int]] = field()
+    has_unknown_conflicts: Final[bool] = field()
+    """
+    Whether the check(s) that failed are unknown.
+
+    KV servers may or may not report which check(s) failed when a write
+    fails due to a check conflict.
+    """
     mutations: Final[Sequence[MutationRepresentation]] = field()
     enqueues: Final[Sequence[EnqueueRepresentation]] = field()
     endpoint: Final[EndpointInfo] = field()
@@ -1365,6 +1378,7 @@ class FailedWrite(FrozenAfterInitDataclass, AnyFailure, DenoKvError):
         # Allow subclass to initialise failed_checks
         if not hasattr(self, "failed_checks"):
             self.failed_checks = tuple()  # type: ignore[misc] # Cannot assign to final
+            self.has_unknown_conflicts = False  # type: ignore[misc] # Cannot assign to final
         self.mutations = tuple(mutations)  # type: ignore[misc] # Cannot assign to final
         self.enqueues = tuple(enqueues)  # type: ignore[misc] # Cannot assign to final
         self.endpoint = endpoint  # type: ignore[misc] # Cannot assign to final
@@ -1399,10 +1413,14 @@ class FailedWrite(FrozenAfterInitDataclass, AnyFailure, DenoKvError):
 
 
 def _normalise_failed_checks(
-    failed_checks: Iterable[int], check_count: int
+    failed_checks: Iterable[int], checks: tuple[CheckRepresentation, ...]
 ) -> tuple[int, ...]:
     failed_checks = tuple(sorted(failed_checks))
-    if failed_checks and (failed_checks[0] < 0 or failed_checks[-1] >= check_count):
+    # If the server didn't report failed checks and there was only one check, we
+    # know the single check must have failed, so report that.
+    if len(failed_checks) == 0 and len(checks) == 1:
+        return (0,)
+    if failed_checks and (failed_checks[0] < 0 or failed_checks[-1] >= len(checks)):
         raise ValueError("failed_checks contains out-of-bounds index")
     return failed_checks
 
@@ -1410,7 +1428,7 @@ def _normalise_failed_checks(
 class ConflictedWrite(FailedWrite):
     def __init__(
         self,
-        failed_checks: Iterable[int],
+        failed_checks: Iterable[int] | None,
         checks: Iterable[CheckRepresentation],
         mutations: Iterable[MutationRepresentation],
         enqueues: Iterable[EnqueueRepresentation],
@@ -1420,9 +1438,10 @@ class ConflictedWrite(FailedWrite):
     ) -> None:
         _checks = tuple(checks)
         self.failed_checks = _normalise_failed_checks(  # type: ignore[misc] # Cannot assign to final attribute "failed_checks"
-            failed_checks,
-            check_count=len(_checks),
+            failed_checks or [],
+            checks=_checks,
         )
+        self.has_unknown_conflicts = len(self.failed_checks) == 0  # type: ignore[misc] # Cannot assign to final attribute
         super(ConflictedWrite, self).__init__(
             _checks, mutations, enqueues, endpoint, cause=cause
         )
@@ -1448,6 +1467,7 @@ class CommittedWrite(FrozenAfterInitDataclass, AnySuccess):
 
     ok: Final[Literal[True]]  # noqa: PYI064
     conflicts: Final[Mapping[KvKey, CheckRepresentation]]  # empty
+    has_unknown_conflicts: Final[Literal[False]]
     versionstamp: Final[VersionStamp]
     checks: Final[Sequence[CheckRepresentation]]
     mutations: Final[Sequence[MutationRepresentation]]
@@ -1464,6 +1484,7 @@ class CommittedWrite(FrozenAfterInitDataclass, AnySuccess):
     ) -> None:
         self.ok = True
         self.conflicts = EMPTY_MAP
+        self.has_unknown_conflicts = False
         self.versionstamp = versionstamp
         self.checks = tuple(checks)
         self.mutations = tuple(mutations)

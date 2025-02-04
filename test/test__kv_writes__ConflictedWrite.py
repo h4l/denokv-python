@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import traceback
 from datetime import datetime
 
@@ -9,6 +11,9 @@ from denokv._kv_writes import Check
 from denokv._kv_writes import ConflictedWrite
 from denokv._kv_writes import Enqueue
 from denokv._kv_writes import Set
+from denokv._pycompat.typing import Iterable
+from denokv._pycompat.typing import Sequence
+from denokv._pycompat.typing import cast
 from denokv.auth import ConsistencyLevel
 from denokv.auth import EndpointInfo
 from denokv.datapath import CheckFailure
@@ -20,16 +25,20 @@ EP = EndpointInfo(URL("https://example.com/"), consistency=ConsistencyLevel.STRO
 
 
 @pytest.fixture
-def instance() -> ConflictedWrite:
+def checks() -> tuple[Check, Check, Check]:
+    return (
+        Check.for_key_not_set(KvKey("a")),
+        Check.for_key_not_set(KvKey("b")),
+        Check.for_key_not_set(KvKey("c")),
+    )
+
+
+@pytest.fixture
+def instance(checks: Iterable[Check]) -> ConflictedWrite:
     pb_checks = [
         datapath_pb2.Check(key=bytes(KvKey("a")), versionstamp=None),
         datapath_pb2.Check(key=bytes(KvKey("b")), versionstamp=None),
         datapath_pb2.Check(key=bytes(KvKey("c")), versionstamp=None),
-    ]
-    checks = [
-        Check.for_key_not_set(KvKey("a")),
-        Check.for_key_not_set(KvKey("b")),
-        Check.for_key_not_set(KvKey("c")),
     ]
     failed_checks = [0, 2]
 
@@ -50,15 +59,10 @@ def instance() -> ConflictedWrite:
     )
 
 
-def test_constructor(instance: ConflictedWrite) -> None:
-    checks = [
-        Check.for_key_not_set(KvKey("a")),
-        Check.for_key_not_set(KvKey("b")),
-        Check.for_key_not_set(KvKey("c")),
-    ]
+def test_constructor(checks: Sequence[Check]) -> None:
     instance = ConflictedWrite(
         failed_checks=[0, 2],
-        checks=list(checks),
+        checks=cast(Iterable[Check], checks),
         mutations=[Set(KvKey("a"), 42)],
         enqueues=[Enqueue("Hi")],
         endpoint=EP,
@@ -74,10 +78,48 @@ def test_constructor(instance: ConflictedWrite) -> None:
     assert instance.conflicts == {KvKey("a"): checks[0], KvKey("c"): checks[2]}
     assert instance.conflicts[KvKey("a")] is checks[0]
 
+
+@pytest.mark.parametrize("failed_checks", [None, [], [0]])
+def test_constructor__conflicts_are_always_known_with_single_check(
+    failed_checks: Iterable[int] | None,
+) -> None:
+    instance = ConflictedWrite(
+        failed_checks=failed_checks,
+        checks=iter([Check.for_key_not_set(KvKey("a"))]),
+        mutations=[Set(KvKey("a"), 42)],
+        enqueues=[Enqueue("Hi")],
+        endpoint=EP,
+    )
+
+    assert KvKey("a") in instance.conflicts
+    assert instance.conflicts[KvKey("a")].key == KvKey("a")
+    assert not instance.has_unknown_conflicts
+
+
+@pytest.mark.parametrize("failed_checks", [None, []])
+def test_constructor__conflicts_are_unknown_with_multiple_checks_without_failed_checks(
+    failed_checks: Iterable[int] | None, checks: Iterable[Check]
+) -> None:
+    instance = ConflictedWrite(
+        failed_checks=failed_checks,
+        checks=checks,
+        mutations=[Set(KvKey("a"), 42)],
+        enqueues=[Enqueue("Hi")],
+        endpoint=EP,
+    )
+
+    assert len(instance.conflicts) == 0
+    assert instance.has_unknown_conflicts
+
+
+def test_constructor__rejects_out_of_bounds_failed_checks(
+    checks: tuple[Check, Check, Check],
+) -> None:
+    assert len(checks) == 3
     with pytest.raises(ValueError, match=r"failed_checks contains out-of-bounds index"):
         ConflictedWrite(
             failed_checks=[0, 10],
-            checks=list(checks),
+            checks=checks,
             mutations=[Set(KvKey("a"), 42)],
             enqueues=[],
             endpoint=EP,

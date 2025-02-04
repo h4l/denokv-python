@@ -62,6 +62,7 @@ def test_constructor(cause: BaseException | None) -> None:
     assert instance.__cause__ is cause
 
     assert instance.conflicts == {}
+    assert not instance.has_unknown_conflicts
 
 
 def test_exception_attributes(instance: FailedWrite) -> None:

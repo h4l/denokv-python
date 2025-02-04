@@ -20,10 +20,17 @@ feature-complete.
 
 **Working**:
 
-- [x] Reading data with kv.get(), kv.list()
+- [x] Reading data with `Kv.get()`, `Kv.list()`
+  - The read APIs are being reworked to improve ergonomics and functionality
+- [x] Writing data with with `Kv.set()`, `Kv.delete()`, `Kv.sum()`, `Kv.min()`,
+      `Kv.max()`, `Kv.enqueue()` and `Kv.check()`.
+  - These methods are available on `Kv` itself for one-off operations, and
+    `Kv.atomic()` can chain these methods to group write operations to apply
+    together in a transaction.
 
 **To-do**:
 
-- [ ] [Writing data / transactions](https://docs.deno.com/deploy/kv/manual/transactions/)
 - [ ] [Watching for changes](https://docs.deno.com/deploy/kv/manual/operations/#watch)
 - [ ] [Queues](https://deno.com/blog/queues)
+  - This is uncertain: The KV Connect protocol does not support Queues, but they
+    could be implemented using watching in theory.

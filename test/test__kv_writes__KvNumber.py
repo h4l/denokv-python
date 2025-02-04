@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from typing import Literal
+from typing import Literal  # noqa: TID251
 
 import pytest
 from v8serialize.jstypes import JSBigInt

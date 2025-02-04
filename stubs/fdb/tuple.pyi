@@ -1,3 +1,5 @@
+# ruff: noqa: TID251
+
 import ctypes
 from typing import Hashable
 from uuid import UUID

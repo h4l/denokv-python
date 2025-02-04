@@ -1,5 +1,5 @@
 import builtins
-from typing import Literal
+from typing import Literal  # noqa: TID251
 
 import pytest
 from v8serialize import Encoder

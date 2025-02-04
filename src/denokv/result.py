@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABCMeta
 from dataclasses import dataclass
-from typing import overload
+from typing import overload  # noqa: TID251
 
 from denokv._pycompat.dataclasses import slots_if310
 from denokv._pycompat.typing import TYPE_CHECKING

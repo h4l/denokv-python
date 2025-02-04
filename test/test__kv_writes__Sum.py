@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from decimal import Decimal
 from math import isnan
-from typing import Literal
+from typing import Literal  # noqa: TID251
 
 import pytest
 from hypothesis import example

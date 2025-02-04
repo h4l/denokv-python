@@ -12,9 +12,8 @@ from dataclasses import field
 from datetime import datetime
 from datetime import timedelta
 from itertools import groupby
-from typing import Literal
-from typing import Never
-from typing import overload
+from typing import Literal  # noqa: TID251
+from typing import overload  # noqa: TID251
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -59,6 +58,7 @@ from denokv._pycompat.typing import Final
 from denokv._pycompat.typing import Iterable
 from denokv._pycompat.typing import Mapping
 from denokv._pycompat.typing import NamedTuple
+from denokv._pycompat.typing import Never
 from denokv._pycompat.typing import Sequence
 from denokv._pycompat.typing import TypeIs
 from denokv._pycompat.typing import TypeVar

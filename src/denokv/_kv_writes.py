@@ -9,8 +9,8 @@ from enum import Enum
 from functools import total_ordering
 from itertools import islice
 from types import MappingProxyType
-from typing import Literal
-from typing import overload
+from typing import Literal  # noqa: TID251
+from typing import overload  # noqa: TID251
 
 from v8serialize import Encoder
 from v8serialize.constants import FLOAT64_SAFE_INT_RANGE

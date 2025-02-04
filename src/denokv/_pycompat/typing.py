@@ -6,6 +6,8 @@ typing_extensions in order to handle the differences between them in one place,
 without needing if TYPE_CHECKING everywhere.
 """
 
+# ruff: noqa: TID251
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Literal
+from typing import Literal  # noqa: TID251
 
 from denokv._pycompat.typing import TypeAlias
 

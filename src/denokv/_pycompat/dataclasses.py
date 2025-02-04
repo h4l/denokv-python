@@ -4,8 +4,10 @@ import sys
 from dataclasses import FrozenInstanceError
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
-from typing import Literal
-from typing import TypedDict  # avoid circular reference with _pycompat.typing
+from typing import Literal  # noqa: TID251
+
+# avoid circular reference with _pycompat.typing
+from typing import TypedDict  # noqa: TID251
 
 
 class NoArg(TypedDict):

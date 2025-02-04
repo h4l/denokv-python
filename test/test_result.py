@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal  # noqa: TID251  # noqa: TID251
 from unittest.mock import Mock
 
 import pytest

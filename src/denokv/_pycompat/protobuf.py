@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import overload
+from typing import overload  # noqa: TID251
 
 from denokv._datapath_pb2 import AtomicWriteStatus
 from denokv._datapath_pb2 import MutationType

@@ -12,8 +12,8 @@ from enum import auto
 from functools import partial
 from os import environ
 from types import TracebackType
-from typing import Literal
-from typing import overload
+from typing import Literal  # noqa: TID251
+from typing import overload  # noqa: TID251
 
 import aiohttp
 import v8serialize

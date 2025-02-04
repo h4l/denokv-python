@@ -10,7 +10,7 @@ from datetime import datetime
 from datetime import timedelta
 from functools import partial
 from itertools import repeat
-from typing import Literal
+from typing import Literal  # noqa: TID251
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch

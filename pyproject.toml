@@ -87,6 +87,7 @@ select = [
   "FA",  # flake8-future-annotations
   "PYI", # flake8-pyi
   "I",
+  "TID", # flake8-tidy-imports
 ]
 
 ignore = [
@@ -101,6 +102,10 @@ ignore = [
   # interchangeably).
   "PYI041",
 ]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing_extensions".msg = "use denokv._pycompat.typing instead, typing_extensions is not a runtime dependency."
+"typing".msg = "Use denokv._pycompat.typing instead (apart from overload and Literal), using typing is error-prone as it has many differences between python versions."
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

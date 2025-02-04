@@ -4,7 +4,7 @@ import functools
 import sys
 from dataclasses import dataclass
 from dataclasses import field
-from typing import overload
+from typing import overload  # noqa: TID251
 
 from fdb.tuple import pack
 from fdb.tuple import unpack

@@ -9,7 +9,7 @@ import struct
 from dataclasses import dataclass
 from enum import Enum
 from enum import auto
-from typing import overload
+from typing import overload  # noqa: TID251
 
 import aiohttp
 import aiohttp.client_exceptions

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal  # noqa: TID251
 
 import pytest
 

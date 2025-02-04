@@ -6,7 +6,7 @@ import time as time_
 from dataclasses import dataclass
 from enum import IntEnum
 from itertools import count
-from typing import Literal
+from typing import Literal  # noqa: TID251
 
 from denokv._pycompat.typing import Callable
 from denokv._pycompat.typing import Iterable

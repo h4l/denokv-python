@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 import re
 import struct
-from typing import Literal
+from typing import Literal  # noqa: TID251
 
 import pytest
 import pytest_asyncio

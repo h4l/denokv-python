@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import weakref
-from typing import Literal
+from typing import Literal  # noqa: TID251
 
 import pytest
 from fdb.tuple import pack
